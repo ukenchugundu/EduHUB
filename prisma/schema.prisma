@@ -1,0 +1,427 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==================== USER & AUTH ====================
+
+model auth_users {
+  auth_user_id Int      @id @default(autoincrement())
+  username     String   @unique @db.VarChar(255)
+  email        String?  @unique @db.VarChar(255)
+  password     String   @db.VarChar(255)
+  role         String   @default("student") @db.VarChar(20)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  // Relations
+  faculty             faculty?             @relation("FacultyUser")
+  created_tasks       task[]               @relation("TaskCreatedBy")
+  created_events      event[]              @relation("EventCreatedBy")
+  task_assignments    task_assignment[]    @relation("UserTaskAssignments")
+  event_registrations event_registration[]
+  marked_records      attendance_record[] @relation("MarkedBy")
+}
+
+model faculty {
+  id            Int       @id @default(autoincrement())
+  user_id       Int       @unique
+  department_id Int?
+  name          String    @db.VarChar(255)
+  designation   String?   @db.VarChar(100)
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  user                auth_users         @relation("FacultyUser", fields: [user_id], references: [auth_user_id])
+  department          department?        @relation(fields: [department_id], references: [id])
+  subjects            subject[]
+  coding_tests        coding_test[]
+}
+
+model department {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique @db.VarChar(255)
+  code      String    @unique @db.VarChar(50)
+  created_at DateTime @default(now())
+
+  students     student[]
+  batches     batch[]
+  tasks       task[]
+  subjects    subject[]
+  faculties   faculty[]
+}
+
+// ==================== SUBJECTS ====================
+
+model subject {
+  id            Int       @id @default(autoincrement())
+  code          String    @unique @db.VarChar(50)
+  name          String    @db.VarChar(255)
+  department_id Int
+  faculty_id    Int?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  department          department          @relation(fields: [department_id], references: [id])
+  faculty             faculty?            @relation(fields: [faculty_id], references: [id])
+  quizzes             quiz[]
+  tasks               task[]
+  student_performance student_performance[]
+  coding_tests        coding_test[]
+}
+
+// ==================== STUDENTS & BATCHES ====================
+
+model student {
+  id            Int       @id @default(autoincrement())
+  student_id    String    @unique @db.VarChar(20)
+  name          String    @db.VarChar(255)
+  email         String    @unique @db.VarChar(255)
+  department_id Int?
+  year          Int?
+  section       String?   @db.Char(1)
+  batch_id      Int?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  department        department?         @relation(fields: [department_id], references: [id])
+  batch             batch?               @relation(fields: [batch_id], references: [id])
+  task_assignments  task_assignment[]    @relation("StudentTaskAssignments")
+  batch_students    batch_student[]
+  student_performance student_performance[]
+  test_attempts     test_attempt[]
+  attendance_records attendance_record[]  @relation("StudentAttendance")
+}
+
+model batch {
+  id            Int       @id @default(autoincrement())
+  name          String    @db.VarChar(100)
+  department_id Int
+  academic_year String    @db.VarChar(20)
+  semester      Int
+  created_at    DateTime  @default(now())
+
+  department          department           @relation(fields: [department_id], references: [id])
+  students            student[]
+  attendance_sessions attendance_session[]
+  batch_students      batch_student[]
+
+  @@unique([name, department_id, academic_year])
+}
+
+model batch_student {
+  batch_id  Int
+  student_id Int
+
+  batch  batch   @relation(fields: [batch_id], references: [id])
+  student student @relation(fields: [student_id], references: [id])
+
+  @@id([batch_id, student_id])
+}
+
+// ==================== QUIZZES & QUESTIONS ====================
+
+model quiz {
+  id         Int       @id @default(autoincrement())
+  cls        String    @db.VarChar(255)
+  title      String    @db.VarChar(255)
+  duration   String    @db.VarChar(255)
+  status     String    @db.VarChar(50)
+  subject_id Int?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  subject    subject?    @relation(fields: [subject_id], references: [id])
+  questions  question[]
+
+  @@index([status])
+}
+
+model question {
+  question_id    Int    @id @default(autoincrement())
+  quiz_id        Int
+  question_text String @db.Text
+
+  quiz    quiz   @relation(fields: [quiz_id], references: [id], onDelete: Cascade)
+  options option[]
+
+  @@index([quiz_id])
+}
+
+model option {
+  option_id   Int     @id @default(autoincrement())
+  question_id Int
+  option_text String  @db.Text
+  is_correct  Boolean @default(false)
+
+  question question @relation(fields: [question_id], references: [question_id], onDelete: Cascade)
+
+  @@index([question_id])
+}
+
+// ==================== TASKS ====================
+
+model task {
+  id            Int        @id @default(autoincrement())
+  title         String     @db.VarChar(255)
+  description   String?    @db.Text
+  due_date      DateTime?
+  priority      String     @default("medium") @db.VarChar(20)
+  status        String     @default("pending") @db.VarChar(20)
+  assigned_by   Int?
+  department_id Int?
+  subject_id    Int?
+  created_at    DateTime   @default(now())
+  updated_at    DateTime   @updatedAt
+
+  assignedBy auth_users?  @relation("TaskCreatedBy", fields: [assigned_by], references: [auth_user_id])
+  department department? @relation(fields: [department_id], references: [id])
+  subject    subject?    @relation(fields: [subject_id], references: [id])
+  assignments task_assignment[]
+
+  @@index([department_id])
+  @@index([due_date])
+  @@index([status])
+}
+
+model task_assignment {
+  id              Int        @id @default(autoincrement())
+  task_id         Int
+  student_id      Int
+  status          String     @default("assigned") @db.VarChar(20)
+  submitted_at    DateTime?
+  submission_text String?    @db.Text
+  created_at      DateTime   @default(now())
+  updated_at      DateTime   @updatedAt
+
+  task    task          @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  student student       @relation("StudentTaskAssignments", fields: [student_id], references: [id])
+  user    auth_users    @relation("UserTaskAssignments", fields: [student_id], references: [auth_user_id], map: "task_assignment_student_fkey")
+
+  @@unique([task_id, student_id])
+  @@index([task_id])
+  @@index([student_id])
+}
+
+// ==================== EVENTS ====================
+
+model event {
+  id                Int        @id @default(autoincrement())
+  title             String     @db.VarChar(255)
+  description      String?    @db.Text
+  event_date        DateTime   @db.Timestamp
+  location          String?    @db.VarChar(255)
+  max_participants  Int?
+  image_url         String?    @db.VarChar(500)
+  category          String?    @db.VarChar(100)
+  status            String     @default("upcoming") @db.VarChar(50)
+  created_by        Int?
+  created_at        DateTime   @default(now())
+  updated_at        DateTime   @updatedAt
+
+  creator       auth_users?         @relation("EventCreatedBy", fields: [created_by], references: [auth_user_id])
+  registrations event_registration[]
+
+  @@index([event_date])
+  @@index([status])
+}
+
+model event_registration {
+  id            Int      @id @default(autoincrement())
+  event_id      Int
+  user_id       Int
+  registered_at DateTime @default(now())
+
+  event event      @relation(fields: [event_id], references: [id], onDelete: Cascade)
+  user  auth_users @relation(fields: [user_id], references: [auth_user_id], onDelete: Cascade)
+
+  @@unique([event_id, user_id])
+  @@index([event_id])
+  @@index([user_id])
+}
+
+// ==================== ATTENDANCE ====================
+
+model attendance_session {
+  id           Int       @id @default(autoincrement())
+  batch_id     Int
+  faculty_id   Int?
+  subject      String    @db.VarChar(255)
+  session_date DateTime  @db.Date
+  start_time   String    @db.VarChar(10)
+  end_time     String?   @db.VarChar(10)
+  topic        String?   @db.VarChar(255)
+  is_active    Boolean   @default(true)
+  created_at   DateTime  @default(now())
+
+  batch    batch              @relation(fields: [batch_id], references: [id], onDelete: Cascade)
+  records  attendance_record[]
+
+  @@unique([batch_id, subject, session_date, start_time])
+  @@index([batch_id])
+  @@index([session_date])
+}
+
+model attendance_record {
+  id         Int        @id @default(autoincrement())
+  session_id Int
+  student_id Int
+  status     String     @db.VarChar(20)
+  marked_at  DateTime   @default(now())
+  marked_by  Int?
+
+  session attendance_session @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  student student            @relation("StudentAttendance", fields: [student_id], references: [id])
+  marker  auth_users?        @relation("MarkedBy", fields: [marked_by], references: [auth_user_id], map: "attendance_record_marker_fkey")
+
+  @@unique([session_id, student_id])
+  @@index([session_id])
+  @@index([student_id])
+}
+
+// ==================== STUDENT PERFORMANCE ====================
+
+model student_performance {
+  id                    Int       @id @default(autoincrement())
+  student_id            Int
+  metric_date           DateTime  @db.Date
+  attendance_percentage Decimal?  @db.Decimal(5,2)
+  quiz_score            Decimal?  @db.Decimal(5,2)
+  assessment_score      Decimal?  @db.Decimal(5,2)
+  interaction_score     Decimal?  @db.Decimal(5,2)
+  literacy_percentage   Decimal?  @db.Decimal(5,2)
+  literacy_level        String?   @db.VarChar(10)
+  subject_id            Int?
+  created_at            DateTime  @default(now())
+
+  student student  @relation(fields: [student_id], references: [id])
+  subject subject? @relation(fields: [subject_id], references: [id])
+
+  @@index([student_id, metric_date])
+  @@index([metric_date, literacy_level])
+}
+
+// ==================== CODING TESTS ====================
+
+model coding_test {
+  id                       Int        @id @default(autoincrement())
+  title                    String     @db.VarChar(255)
+  description              String?    @db.Text
+  faculty_id               Int?
+  subject_id              Int?
+  duration_minutes         Int
+  start_time               DateTime   @db.Timestamp
+  end_time                 DateTime   @db.Timestamp
+  is_active                Boolean    @default(true)
+  allow_multiple_attempts  Boolean    @default(false)
+  created_at               DateTime   @default(now())
+
+  faculty   faculty?        @relation(fields: [faculty_id], references: [id])
+  subject   subject?        @relation(fields: [subject_id], references: [id])
+  questions test_question[]
+  attempts  test_attempt[]
+
+  @@index([faculty_id])
+  @@index([start_time])
+  @@index([is_active])
+}
+
+model test_question {
+  id                  Int        @id @default(autoincrement())
+  test_id             Int
+  question_number     Int
+  title               String     @db.VarChar(255)
+  description         String     @db.Text
+  input_format        String?    @db.Text
+  output_format       String?    @db.Text
+  constraints         String?    @db.Text
+  sample_input        String?    @db.Text
+  sample_output       String?    @db.Text
+  test_cases          Json?
+  difficulty          String?    @db.VarChar(20)
+  points              Int        @default(10)
+  time_limit_seconds  Int        @default(30)
+  memory_limit_mb      Int        @default(256)
+
+  test        coding_test          @relation(fields: [test_id], references: [id], onDelete: Cascade)
+  submissions question_submission[]
+
+  @@index([test_id])
+}
+
+model test_attempt {
+  id                Int        @id @default(autoincrement())
+  test_id           Int
+  student_id        Int
+  start_time        DateTime   @default(now())
+  end_time          DateTime?
+  status            String     @db.VarChar(20)
+  total_score       Int        @default(0)
+  plagiarism_score  Decimal?   @db.Decimal(5,2)
+  cheating_flags   Json?      @default("[]")
+  is_flagged       Boolean    @default(false)
+
+  test        coding_test         @relation(fields: [test_id], references: [id])
+  student     student             @relation(fields: [student_id], references: [id])
+  submissions question_submission[]
+  cheating_logs cheating_log[]
+
+  @@index([student_id, test_id])
+  @@index([status])
+}
+
+model question_submission {
+  id                  Int       @id @default(autoincrement())
+  attempt_id          Int
+  question_id         Int
+  code                String?   @db.Text
+  language            String    @db.VarChar(50)
+  status              String    @db.VarChar(20)
+  score               Int       @default(0)
+  execution_time      Int?
+  memory_used         Int?
+  test_cases_passed   Int       @default(0)
+  total_test_cases    Int       @default(0)
+  submitted_at        DateTime  @default(now())
+
+  attempt   test_attempt   @relation(fields: [attempt_id], references: [id], onDelete: Cascade)
+  question  test_question  @relation(fields: [question_id], references: [id])
+  plagiarism_results plagiarism_result[] @relation("SubmissionPlagiarism")
+  similar_results      plagiarism_result[] @relation("SimilarSubmission")
+
+  @@index([attempt_id, question_id])
+}
+
+model cheating_log {
+  id          Int       @id @default(autoincrement())
+  attempt_id  Int
+  event_type  String    @db.VarChar(50)
+  event_data  Json?
+  timestamp   DateTime  @default(now())
+
+  attempt test_attempt @relation(fields: [attempt_id], references: [id], onDelete: Cascade)
+
+  @@index([attempt_id, timestamp])
+}
+
+model plagiarism_result {
+  id                    Int       @id @default(autoincrement())
+  submission_id         Int
+  similar_submission_id Int
+  similarity_score      Decimal   @db.Decimal(5,2)
+  matching_lines       Json?
+  algorithm_used       String?   @db.VarChar(50)
+  created_at           DateTime  @default(now())
+
+  submission         question_submission @relation("SubmissionPlagiarism", fields: [submission_id], references: [id])
+  similar_submission question_submission @relation("SimilarSubmission", fields: [similar_submission_id], references: [id])
+
+  @@index([similarity_score])
+}
+

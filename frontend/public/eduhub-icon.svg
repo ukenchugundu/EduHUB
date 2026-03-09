@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="eduhub-bg" x1="20" y1="18" x2="108" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8B5CF6" />
+      <stop offset="0.55" stop-color="#4F46E5" />
+      <stop offset="1" stop-color="#0EA5E9" />
+    </linearGradient>
+    <linearGradient id="eduhub-mark" x1="36" y1="36" x2="95" y2="86" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" />
+      <stop offset="1" stop-color="#E0F2FE" />
+    </linearGradient>
+  </defs>
+
+  <circle cx="64" cy="64" r="56" fill="url(#eduhub-bg)" />
+  <circle cx="64" cy="64" r="49" stroke="white" stroke-opacity="0.18" stroke-width="4" />
+  <circle cx="64" cy="64" r="42" fill="white" fill-opacity="0.06" />
+
+  <path d="M64 31 28 46.5 64 62l28.5-12.4V72h7V46.3L64 31Z" fill="url(#eduhub-mark)" />
+  <path d="M43 61.5v11.8C43 80.6 52.4 86 64 86s21-5.4 21-12.7V61.5L64 70.6 43 61.5Z" fill="#F8FAFC" />
+  <path d="M49 90c4.2 3.4 9.4 5 15 5 5.5 0 10.6-1.6 14.8-5" stroke="#DDEAFE" stroke-width="4.5" stroke-linecap="round" />
+  <circle cx="93" cy="35" r="7" fill="#F8FAFC" fill-opacity="0.18" />
+</svg>

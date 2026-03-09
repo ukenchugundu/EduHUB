@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # PostgreSQL Database
@@ -18,6 +18,18 @@ services:
     networks:
       - eduhub-network
 
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: eduhub-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - eduhub-network
+    command: redis-server --appendonly yes
+
   # Backend API
   backend:
     build:
@@ -28,10 +40,12 @@ services:
       DATABASE_URL: postgresql://postgres:password@database:5432/eduhub
       DB_SSL: "false"
       PORT: 3000
+      REDIS_URL: redis://redis:6379
     ports:
       - "3000:3000"
     depends_on:
       - database
+      - redis
     volumes:
       - ./backend/uploads:/app/uploads
     networks:
@@ -52,6 +66,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   eduhub-network:

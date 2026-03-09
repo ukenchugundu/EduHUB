@@ -1,38 +1,40 @@
 services:
-  # PostgreSQL Database
-  - name: eduhub-db
-    database:
-      name: eduhub
-      plan: free
-    postgresVersion: 15
-    region: oregon
-
-  # Backend API Service
-  - name: eduhub-backend
-    region: oregon
-    plan: free
-    type: web
-    buildCommand: cd backend && npm install && npm run build
-    startCommand: cd backend && node dist/index.js
+  - type: web
+    name: eduhub-backend
+    env: node
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api
+    autoDeploy: true
     envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: eduhub-db
-          property: connectionString
+      - key: NODE_ENV
+        value: production
       - key: DB_SSL
         value: "true"
-      - key: PORT
-        value: "3000"
-    healthCheckPath: /api
-
-  # Frontend Static Site
-  - name: eduhub-frontend
-    region: oregon
-    plan: free
-    type: static
-    buildCommand: cd frontend && npm install && npm run build
-    publishDir: frontend/dist
-    envVars:
-      - key: VITE_API_URL
-        value: https://eduhub-backend.onrender.com
-
+      - key: EXPOSE_AUTH_DEBUG
+        value: "false"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: EMAIL_PROVIDER
+        value: dev
+      - key: EMAIL_FROM
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false

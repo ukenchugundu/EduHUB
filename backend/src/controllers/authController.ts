@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { Request, Response } from "express";
 import { Pool, PoolClient } from "pg";
+import jwt from "jsonwebtoken";
 import pool from "../utils/db";
 
 type UserRole = "student" | "faculty" | "admin";
@@ -19,9 +20,16 @@ interface AuthUserRecord {
   role: UserRole;
   full_name: string;
   roll_number: string | null;
+  phone?: string | null;
+  department?: string | null;
+  academic_year?: string | null;
+  section?: string | null;
+  designation?: string | null;
   password_hash: string;
   password_reset_token_hash: string | null;
   password_reset_expires_at: string | Date | null;
+  created_at?: string | Date;
+  updated_at?: string | Date;
 }
 
 interface PublicUser {
@@ -39,11 +47,30 @@ interface AuthUserSummaryRow {
   role: UserRole;
   full_name: string;
   roll_number: string | null;
+  phone?: string | null;
+  department?: string | null;
+  academic_year?: string | null;
+  section?: string | null;
+  designation?: string | null;
   created_at: string | Date;
   updated_at?: string | Date;
 }
 
-type AdminManagedRole = "student" | "faculty";
+type AdminManagedRole = "student" | "faculty" | "admin";
+
+interface UserCreateInput {
+  email: string;
+  password: string;
+  role: UserRole;
+  fullName: string;
+  rollNumber: string;
+  phone?: string;
+  department?: string;
+  academicYear?: string;
+  section?: string;
+  designation?: string;
+  createdAt?: string | null;
+}
 
 interface AdminMemberSummary {
   id: number;
@@ -51,6 +78,11 @@ interface AdminMemberSummary {
   role: AdminManagedRole;
   fullName: string;
   rollNumber: string;
+  phone: string;
+  department: string;
+  year: string;
+  section: string;
+  designation: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -119,8 +151,11 @@ const EMAIL_FROM = (process.env.EMAIL_FROM || "no-reply@eduhub.local")
 const SENDGRID_API_KEY = (process.env.SENDGRID_API_KEY || "").trim();
 const RESEND_API_KEY = (process.env.RESEND_API_KEY || "").trim();
 const AUTH_DEBUG_ENABLED =
-  process.env.NODE_ENV !== "production" && process.env.EXPOSE_AUTH_DEBUG !== "false";
-const FRONTEND_BASE_URL = (process.env.FRONTEND_BASE_URL || "http://localhost:8080")
+  process.env.NODE_ENV !== "production" &&
+  process.env.EXPOSE_AUTH_DEBUG !== "false";
+const FRONTEND_BASE_URL = (
+  process.env.FRONTEND_BASE_URL || "http://localhost:8080"
+)
   .trim()
   .replace(/\/$/, "");
 const DEV_MAILBOX_PATH = path.resolve(__dirname, "../../tmp/dev-mailbox.log");
@@ -184,22 +219,36 @@ const resetFailureLockouts = new Map<string, LockoutEntry>();
 
 if (emailProviderRaw !== EMAIL_PROVIDER) {
   console.warn(
-    `[auth-mail] Unsupported EMAIL_PROVIDER "${emailProviderRaw}". Falling back to "dev".`
+    `[auth-mail] Unsupported EMAIL_PROVIDER "${emailProviderRaw}". Falling back to "dev".`,
   );
 }
 
 const toRole = (value: unknown): UserRole | null => {
-  const role = String(value ?? "").trim().toLowerCase();
+  const role = String(value ?? "")
+    .trim()
+    .toLowerCase();
   return allowedRoles.has(role as UserRole) ? (role as UserRole) : null;
 };
 
 const toAdminManagedRole = (value: unknown): AdminManagedRole | null => {
-  const role = String(value ?? "").trim().toLowerCase();
-  if (role === "student" || role === "faculty") {
+  const role = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (role === "student" || role === "faculty" || role === "admin") {
     return role;
   }
   return null;
 };
+
+const toManagedRole = (role: UserRole): AdminManagedRole =>
+  role === "faculty" || role === "admin" ? role : "student";
+
+const getManagedMemberIdLabel = (role: AdminManagedRole): string =>
+  role === "student"
+    ? "studentId"
+    : role === "faculty"
+      ? "facultyId"
+      : "adminId";
 
 const normalizeEmail = (value: unknown): string =>
   String(value ?? "")
@@ -216,6 +265,39 @@ const normalizeRollNumber = (value: unknown): string =>
   String(value ?? "")
     .trim()
     .slice(0, 120);
+
+const normalizeOptionalText = (value: unknown, maxLength: number): string =>
+  String(value ?? "")
+    .trim()
+    .slice(0, maxLength);
+
+const normalizePhone = (value: unknown): string => normalizeOptionalText(value, 40);
+
+const normalizeDepartment = (value: unknown): string =>
+  normalizeOptionalText(value, 120);
+
+const normalizeAcademicYear = (value: unknown): string =>
+  normalizeOptionalText(value, 40);
+
+const normalizeSection = (value: unknown): string =>
+  normalizeOptionalText(value, 40);
+
+const normalizeDesignation = (value: unknown): string =>
+  normalizeOptionalText(value, 120);
+
+const normalizeCreatedAt = (value: unknown): string | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString();
+};
 
 const normalizeOtp = (value: unknown): string =>
   String(value ?? "")
@@ -259,10 +341,13 @@ const verifyPassword = (password: string, storedHash: string): boolean => {
   }
   const candidate = scryptSync(password, salt, 64);
   const expected = Buffer.from(hash, "hex");
-  return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+  return (
+    candidate.length === expected.length && timingSafeEqual(candidate, expected)
+  );
 };
 
-const hashToken = (value: string): string => createHash("sha256").update(value).digest("hex");
+const hashToken = (value: string): string =>
+  createHash("sha256").update(value).digest("hex");
 
 const compareHashes = (left: string, right: string): boolean => {
   const leftBuffer = Buffer.from(left, "hex");
@@ -277,7 +362,8 @@ const getExpiryTimestamp = (value: string | Date | null): number => {
   if (!value) {
     return 0;
   }
-  const parsed = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  const parsed =
+    value instanceof Date ? value.getTime() : new Date(value).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
@@ -294,7 +380,8 @@ const maskEmail = (email: string): string => {
 
   const domainLabels = domainPart.split(".");
   const baseDomain = domainLabels[0] ?? "";
-  const domainSuffix = domainLabels.length > 1 ? `.${domainLabels.slice(1).join(".")}` : "";
+  const domainSuffix =
+    domainLabels.length > 1 ? `.${domainLabels.slice(1).join(".")}` : "";
   const maskedDomain =
     baseDomain.length <= 2
       ? `${baseDomain.slice(0, 1)}*`
@@ -323,7 +410,7 @@ const formatRetryDuration = (retryAfterMs: number): string => {
 
 const trimRateLimitStore = (
   store: Map<string, RateLimitEntry>,
-  maxAgeMs: number
+  maxAgeMs: number,
 ): void => {
   if (store.size <= RATE_LIMIT_STORE_MAX_SIZE) {
     return;
@@ -342,10 +429,13 @@ const trimRateLimitStore = (
 const applyRateLimit = (
   store: Map<string, RateLimitEntry>,
   key: string,
-  config: RateLimitConfig
+  config: RateLimitConfig,
 ): { allowed: true } | { allowed: false; retryAfterMs: number } => {
   const now = Date.now();
-  trimRateLimitStore(store, Math.max(config.windowMs, config.blockDurationMs) * 2);
+  trimRateLimitStore(
+    store,
+    Math.max(config.windowMs, config.blockDurationMs) * 2,
+  );
 
   const state = store.get(key) ?? {
     windowStartedAt: now,
@@ -382,7 +472,7 @@ const applyRateLimit = (
 
 const trimLockoutStore = (
   store: Map<string, LockoutEntry>,
-  maxAgeMs: number
+  maxAgeMs: number,
 ): void => {
   if (store.size <= RATE_LIMIT_STORE_MAX_SIZE) {
     return;
@@ -390,7 +480,8 @@ const trimLockoutStore = (
 
   const now = Date.now();
   for (const [key, entry] of store.entries()) {
-    const inactiveTooLong = now - entry.windowStartedAt > maxAgeMs && entry.lockedUntil <= now;
+    const inactiveTooLong =
+      now - entry.windowStartedAt > maxAgeMs && entry.lockedUntil <= now;
     if (inactiveTooLong) {
       store.delete(key);
     }
@@ -399,7 +490,7 @@ const trimLockoutStore = (
 
 const getLockoutRemainingMs = (
   store: Map<string, LockoutEntry>,
-  key: string
+  key: string,
 ): number => {
   const state = store.get(key);
   if (!state) {
@@ -412,10 +503,13 @@ const getLockoutRemainingMs = (
 const recordFailureAndGetLockoutMs = (
   store: Map<string, LockoutEntry>,
   key: string,
-  config: LockoutConfig
+  config: LockoutConfig,
 ): number => {
   const now = Date.now();
-  trimLockoutStore(store, Math.max(config.failureWindowMs, config.lockoutDurationMs) * 2);
+  trimLockoutStore(
+    store,
+    Math.max(config.failureWindowMs, config.lockoutDurationMs) * 2,
+  );
 
   const state = store.get(key) ?? {
     windowStartedAt: now,
@@ -450,10 +544,17 @@ const clearFailures = (store: Map<string, LockoutEntry>, key: string): void => {
 const respondWithRateLimit = (
   res: Response,
   retryAfterMs: number,
-  message: string
+  message: string,
 ) => {
-  res.setHeader("Retry-After", String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
-  return res.status(429).json({ error: `${message} Try again in ${formatRetryDuration(retryAfterMs)}.` });
+  res.setHeader(
+    "Retry-After",
+    String(Math.max(1, Math.ceil(retryAfterMs / 1000))),
+  );
+  return res
+    .status(429)
+    .json({
+      error: `${message} Try again in ${formatRetryDuration(retryAfterMs)}.`,
+    });
 };
 
 const persistDevEmailPreview = (payload: Record<string, unknown>): void => {
@@ -477,7 +578,9 @@ const sendViaSendGrid = async ({
   html: string;
 }): Promise<void> => {
   if (!SENDGRID_API_KEY || !EMAIL_FROM) {
-    throw new Error("SENDGRID_API_KEY and EMAIL_FROM must be configured for SendGrid.");
+    throw new Error(
+      "SENDGRID_API_KEY and EMAIL_FROM must be configured for SendGrid.",
+    );
   }
 
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
@@ -499,7 +602,9 @@ const sendViaSendGrid = async ({
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`SendGrid API error (${response.status}): ${body.slice(0, 400)}`);
+    throw new Error(
+      `SendGrid API error (${response.status}): ${body.slice(0, 400)}`,
+    );
   }
 };
 
@@ -515,7 +620,9 @@ const sendViaResend = async ({
   html: string;
 }): Promise<void> => {
   if (!RESEND_API_KEY || !EMAIL_FROM) {
-    throw new Error("RESEND_API_KEY and EMAIL_FROM must be configured for Resend.");
+    throw new Error(
+      "RESEND_API_KEY and EMAIL_FROM must be configured for Resend.",
+    );
   }
 
   const response = await fetch("https://api.resend.com/emails", {
@@ -535,7 +642,9 @@ const sendViaResend = async ({
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Resend API error (${response.status}): ${body.slice(0, 400)}`);
+    throw new Error(
+      `Resend API error (${response.status}): ${body.slice(0, 400)}`,
+    );
   }
 };
 
@@ -562,7 +671,7 @@ const sendSecurityEmail = async ({
   if (EMAIL_PROVIDER === "dev") {
     persistDevEmailPreview(payload);
     console.info(
-      `[auth-mail] Stored email preview for ${to}. Subject: "${subject}". File: ${DEV_MAILBOX_PATH}`
+      `[auth-mail] Stored email preview for ${to}. Subject: "${subject}". File: ${DEV_MAILBOX_PATH}`,
     );
     return;
   }
@@ -582,7 +691,9 @@ const sendSecurityEmail = async ({
       error: error instanceof Error ? error.message : "unknown",
     });
     console.error("[auth-mail] Failed to send email:", error);
-    throw new Error("Unable to deliver security email right now. Please try again.");
+    throw new Error(
+      "Unable to deliver security email right now. Please try again.",
+    );
   }
 };
 
@@ -642,7 +753,7 @@ const buildPasswordResetUrl = (
   token: string,
   email: string,
   role: UserRole,
-  frontendBaseUrl: string
+  frontendBaseUrl: string,
 ): string => {
   const params = new URLSearchParams({
     mode: "reset",
@@ -710,7 +821,9 @@ const cleanupExpiredLoginChallenges = (): void => {
   }
 };
 
-const createLoginChallenge = (user: PublicUser): { challengeId: string; otp: string } => {
+const createLoginChallenge = (
+  user: PublicUser,
+): { challengeId: string; otp: string } => {
   cleanupExpiredLoginChallenges();
   clearLoginChallengesForEmail(user.email);
 
@@ -729,7 +842,9 @@ const createLoginChallenge = (user: PublicUser): { challengeId: string; otp: str
   return { challengeId, otp };
 };
 
-const rotateLoginChallengeOtp = (challengeId: string): { challenge: PendingLoginOtpChallenge; otp: string } | null => {
+const rotateLoginChallengeOtp = (
+  challengeId: string,
+): { challenge: PendingLoginOtpChallenge; otp: string } | null => {
   cleanupExpiredLoginChallenges();
   const challenge = loginOtpChallenges.get(challengeId);
   if (!challenge) {
@@ -770,14 +885,44 @@ const toPublicUser = (row: AuthUserRecord): PublicUser => {
   };
 };
 
+const toIsoDateString = (value: string | Date | null | undefined): string => {
+  const parsed =
+    value instanceof Date ? value : value ? new Date(value) : new Date();
+  return Number.isNaN(parsed.getTime())
+    ? new Date().toISOString()
+    : parsed.toISOString();
+};
+
 const toAdminMemberSummary = (row: AuthUserSummaryRow): AdminMemberSummary => ({
   id: Number(row.auth_user_id),
   email: row.email,
-  role: row.role === "faculty" ? "faculty" : "student",
+  role: toManagedRole(row.role),
   fullName: row.full_name ?? "",
   rollNumber: row.roll_number ?? "",
-  createdAt: new Date(row.created_at).toISOString(),
-  updatedAt: new Date(row.updated_at ?? row.created_at).toISOString(),
+  phone: row.phone ?? "",
+  department: row.department ?? "",
+  year: row.academic_year ?? "",
+  section: row.section ?? "",
+  designation: row.designation ?? "",
+  createdAt: toIsoDateString(row.created_at),
+  updatedAt: toIsoDateString(row.updated_at ?? row.created_at),
+});
+
+const toInMemoryAdminMemberSummary = (
+  user: AuthUserRecord,
+): AdminMemberSummary => ({
+  id: Number(user.auth_user_id),
+  email: user.email,
+  role: toManagedRole(user.role),
+  fullName: user.full_name ?? "",
+  rollNumber: user.roll_number ?? "",
+  phone: user.phone ?? "",
+  department: user.department ?? "",
+  year: user.academic_year ?? "",
+  section: user.section ?? "",
+  designation: user.designation ?? "",
+  createdAt: toIsoDateString(user.created_at),
+  updatedAt: toIsoDateString(user.updated_at ?? user.created_at),
 });
 
 const ensureAuthUsersTable = async (db: Pool | PoolClient): Promise<void> => {
@@ -789,26 +934,133 @@ const ensureAuthUsersTable = async (db: Pool | PoolClient): Promise<void> => {
       role VARCHAR(20) NOT NULL,
       full_name VARCHAR(255) NOT NULL DEFAULT '',
       roll_number VARCHAR(120),
+      phone VARCHAR(40),
+      department VARCHAR(120),
+      academic_year VARCHAR(40),
+      section VARCHAR(40),
+      designation VARCHAR(120),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-  await db.query("ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS password_reset_token_hash TEXT");
+  await db.query("ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS email VARCHAR(320)");
+  await db.query("ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS password_hash TEXT");
   await db.query(
-    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMPTZ"
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'student'",
   );
-  await db.query("CREATE INDEX IF NOT EXISTS idx_auth_users_role ON auth_users (role)");
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) NOT NULL DEFAULT ''",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS roll_number VARCHAR(120)",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS phone VARCHAR(40)",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS department VARCHAR(120)",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS academic_year VARCHAR(40)",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS section VARCHAR(40)",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS designation VARCHAR(120)",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS password_reset_token_hash TEXT",
+  );
+  await db.query(
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMPTZ",
+  );
+  await db.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'auth_users'
+          AND column_name = 'username'
+      ) THEN
+        EXECUTE 'UPDATE auth_users SET full_name = COALESCE(NULLIF(full_name, ''''), username) WHERE username IS NOT NULL';
+        EXECUTE 'ALTER TABLE auth_users ALTER COLUMN username DROP NOT NULL';
+      END IF;
+    END $$;
+  `);
+  await db.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'auth_users'
+          AND column_name = 'password'
+      ) THEN
+        EXECUTE 'UPDATE auth_users SET password_hash = COALESCE(NULLIF(password_hash, ''''), password::text) WHERE password IS NOT NULL';
+        EXECUTE 'ALTER TABLE auth_users ALTER COLUMN password DROP NOT NULL';
+      END IF;
+    END $$;
+  `);
+  await db.query("UPDATE auth_users SET password_hash = '' WHERE password_hash IS NULL");
+  await db.query("ALTER TABLE auth_users ALTER COLUMN password_hash SET DEFAULT ''");
+  await db.query(`
+    UPDATE auth_users
+    SET created_at = COALESCE(created_at, NOW()),
+        updated_at = COALESCE(updated_at, created_at, NOW())
+    WHERE created_at IS NULL OR updated_at IS NULL
+  `);
+  await db.query("ALTER TABLE auth_users ALTER COLUMN created_at SET DEFAULT NOW()");
+  await db.query("ALTER TABLE auth_users ALTER COLUMN updated_at SET DEFAULT NOW()");
+  await db.query("ALTER TABLE auth_users ALTER COLUMN created_at SET NOT NULL");
+  await db.query("ALTER TABLE auth_users ALTER COLUMN updated_at SET NOT NULL");
+  await db.query(
+    "CREATE INDEX IF NOT EXISTS idx_auth_users_role ON auth_users (role)",
+  );
+  await db.query(
+    "CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users (email)",
+  );
 };
 
 const seedDefaultAccounts = async (db: Pool | PoolClient): Promise<void> => {
   await db.query(
     `
-      INSERT INTO auth_users (email, password_hash, role, full_name, roll_number)
-      VALUES
-        ($1, $2, 'admin', 'Admin User', NULL),
-        ($3, $4, 'faculty', 'Faculty User', NULL),
-        ($5, $6, 'student', 'Student User', 'STU001')
-      ON CONFLICT (email) DO NOTHING
+      INSERT INTO auth_users (
+        email,
+        password_hash,
+        role,
+        full_name,
+        roll_number,
+        created_at,
+        updated_at
+      )
+      SELECT defaults.email,
+             defaults.password_hash,
+             defaults.role,
+             defaults.full_name,
+             defaults.roll_number,
+             NOW(),
+             NOW()
+      FROM (
+        VALUES
+          ($1, $2, 'admin', 'Admin User', NULL),
+          ($3, $4, 'faculty', 'Faculty User', NULL),
+          ($5, $6, 'student', 'Student User', 'STU001')
+      ) AS defaults(email, password_hash, role, full_name, roll_number)
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM auth_users existing
+        WHERE existing.email = defaults.email
+      )
     `,
     [
       "admin@eduhub.local",
@@ -817,13 +1069,15 @@ const seedDefaultAccounts = async (db: Pool | PoolClient): Promise<void> => {
       hashPassword("Faculty@123"),
       "student@eduhub.local",
       hashPassword("Student@123"),
-    ]
+    ],
   );
 };
 
 const ensureInMemorySeedUsers = (): void => {
   const ensureDefaultUser = (user: Omit<AuthUserRecord, "auth_user_id">) => {
-    const exists = inMemoryUsers.some((current) => current.email === user.email);
+    const exists = inMemoryUsers.some(
+      (current) => current.email === user.email,
+    );
     if (exists) {
       return;
     }
@@ -833,14 +1087,23 @@ const ensureInMemorySeedUsers = (): void => {
     });
   };
 
+  const now = new Date().toISOString();
+
   ensureDefaultUser({
     email: "admin@eduhub.local",
     role: "admin",
     full_name: "Admin User",
     roll_number: null,
+    phone: null,
+    department: null,
+    academic_year: null,
+    section: null,
+    designation: null,
     password_hash: hashPassword("Admin@123"),
     password_reset_token_hash: null,
     password_reset_expires_at: null,
+    created_at: now,
+    updated_at: now,
   });
 
   ensureDefaultUser({
@@ -848,9 +1111,16 @@ const ensureInMemorySeedUsers = (): void => {
     role: "faculty",
     full_name: "Faculty User",
     roll_number: null,
+    phone: null,
+    department: null,
+    academic_year: null,
+    section: null,
+    designation: null,
     password_hash: hashPassword("Faculty@123"),
     password_reset_token_hash: null,
     password_reset_expires_at: null,
+    created_at: now,
+    updated_at: now,
   });
 
   ensureDefaultUser({
@@ -858,9 +1128,16 @@ const ensureInMemorySeedUsers = (): void => {
     role: "student",
     full_name: "Student User",
     roll_number: "STU001",
+    phone: null,
+    department: null,
+    academic_year: null,
+    section: null,
+    designation: null,
     password_hash: hashPassword("Student@123"),
     password_reset_token_hash: null,
     password_reset_expires_at: null,
+    created_at: now,
+    updated_at: now,
   });
 };
 
@@ -872,27 +1149,68 @@ const createUserInDb = async (
     role,
     fullName,
     rollNumber,
-  }: {
-    email: string;
-    password: string;
-    role: UserRole;
-    fullName: string;
-    rollNumber: string;
-  }
+    phone = "",
+    department = "",
+    academicYear = "",
+    section = "",
+    designation = "",
+    createdAt = null,
+  }: UserCreateInput,
 ): Promise<{ user?: PublicUser; error?: string }> => {
-  const exists = await db.query("SELECT auth_user_id FROM auth_users WHERE email = $1", [email]);
+  const exists = await db.query(
+    "SELECT auth_user_id FROM auth_users WHERE email = $1",
+    [email],
+  );
   if ((exists.rowCount ?? 0) > 0) {
     return { error: "Account already exists for this email." };
   }
 
   const inserted = await db.query<AuthUserRecord>(
     `
-      INSERT INTO auth_users (email, password_hash, role, full_name, roll_number)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO auth_users (
+        email,
+        password_hash,
+        role,
+        full_name,
+        roll_number,
+        phone,
+        department,
+        academic_year,
+        section,
+        designation,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $9,
+        $10,
+        COALESCE($11::timestamptz, NOW()),
+        COALESCE($11::timestamptz, NOW())
+      )
       RETURNING auth_user_id, email, role, full_name, roll_number, password_hash,
         password_reset_token_hash, password_reset_expires_at
     `,
-    [email, hashPassword(password), role, fullName, rollNumber || null]
+    [
+      email,
+      hashPassword(password),
+      role,
+      fullName,
+      rollNumber || null,
+      phone || null,
+      department || null,
+      academicYear || null,
+      section || null,
+      designation || null,
+      createdAt,
+    ],
   );
   return { user: toPublicUser(inserted.rows[0]) };
 };
@@ -903,26 +1221,34 @@ const createUserInMemory = ({
   role,
   fullName,
   rollNumber,
-}: {
-  email: string;
-  password: string;
-  role: UserRole;
-  fullName: string;
-  rollNumber: string;
-}): { user?: PublicUser; error?: string } => {
+  phone = "",
+  department = "",
+  academicYear = "",
+  section = "",
+  designation = "",
+  createdAt = null,
+}: UserCreateInput): { user?: PublicUser; error?: string } => {
   ensureInMemorySeedUsers();
   if (inMemoryUsers.some((user) => user.email === email)) {
     return { error: "Account already exists for this email." };
   }
+  const createdTimestamp = createdAt ?? new Date().toISOString();
   const user: AuthUserRecord = {
     auth_user_id: inMemoryUserId++,
     email,
     role,
     full_name: fullName,
     roll_number: rollNumber || null,
+    phone: phone || null,
+    department: department || null,
+    academic_year: academicYear || null,
+    section: section || null,
+    designation: designation || null,
     password_hash: hashPassword(password),
     password_reset_token_hash: null,
     password_reset_expires_at: null,
+    created_at: createdTimestamp,
+    updated_at: createdTimestamp,
   };
   inMemoryUsers.push(user);
   return { user: toPublicUser(user) };
@@ -931,7 +1257,7 @@ const createUserInMemory = ({
 const countOrZero = async (
   db: Pool | PoolClient,
   query: string,
-  params: unknown[] = []
+  params: unknown[] = [],
 ): Promise<number> => {
   try {
     const result = await db.query<{ value: number | string }>(query, params);
@@ -950,7 +1276,7 @@ const countOrZero = async (
 
 const getUserByEmailFromDb = async (
   db: Pool | PoolClient,
-  email: string
+  email: string,
 ): Promise<AuthUserRecord | null> => {
   const result = await db.query<AuthUserRecord>(
     `
@@ -960,7 +1286,7 @@ const getUserByEmailFromDb = async (
       WHERE email = $1
       LIMIT 1
     `,
-    [email]
+    [email],
   );
 
   return result.rows[0] ?? null;
@@ -974,7 +1300,9 @@ export const registerUser = async (req: Request, res: Response) => {
   const rollNumber = normalizeRollNumber(req.body?.rollNumber);
 
   if (role !== "student") {
-    return res.status(400).json({ error: "Only student self-registration is allowed." });
+    return res
+      .status(400)
+      .json({ error: "Only student self-registration is allowed." });
   }
   if (!email || !password || password.length < 6 || !fullName) {
     return res.status(400).json({
@@ -1017,22 +1345,67 @@ export const registerUser = async (req: Request, res: Response) => {
 };
 
 export const createMemberByAdmin = async (req: Request, res: Response) => {
-  const role = toRole(req.body?.role);
+  const role = toAdminManagedRole(req.body?.role);
   const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password ?? "");
-  const fullName = normalizeName(req.body?.fullName);
-  const rollNumber = normalizeRollNumber(req.body?.rollNumber);
+  const fullName = normalizeName(req.body?.name ?? req.body?.fullName);
+  const phone = normalizePhone(req.body?.phone);
+  const department = normalizeDepartment(req.body?.department);
+  const academicYear = normalizeAcademicYear(
+    req.body?.year ?? req.body?.academicYear,
+  );
+  const section = normalizeSection(req.body?.section);
+  const designation = normalizeDesignation(req.body?.designation);
+  const createdAt = normalizeCreatedAt(req.body?.created_at ?? req.body?.createdAt);
 
-  if (role !== "student" && role !== "faculty") {
-    return res.status(400).json({ error: "role must be either student or faculty." });
+  if (!role) {
+    return res
+      .status(400)
+      .json({ error: "role must be one of: student, faculty, admin." });
   }
+
+  const rollNumber = normalizeRollNumber(
+    role === "student"
+      ? req.body?.studentId ?? req.body?.rollNumber
+      : role === "faculty"
+        ? req.body?.facultyId ?? req.body?.rollNumber
+        : req.body?.adminId ?? req.body?.rollNumber,
+  );
+
   if (!email || !password || password.length < 6 || !fullName) {
     return res.status(400).json({
-      error: "email, password (min 6 chars) and fullName are required.",
+      error: "name, email, and password (min 6 chars) are required.",
     });
   }
-  if ((role === "student" || role === "faculty") && !rollNumber) {
-    return res.status(400).json({ error: "rollNumber is required for student and faculty accounts." });
+  if (!rollNumber) {
+    return res
+      .status(400)
+      .json({
+        error: `${getManagedMemberIdLabel(role)} is required for ${role} accounts.`,
+      });
+  }
+  if (role === "student" && (!department || !academicYear || !section || !phone)) {
+    return res.status(400).json({
+      error:
+        "department, year, section, and phone are required for student accounts.",
+    });
+  }
+  if (role === "faculty" && (!department || !designation || !phone)) {
+    return res.status(400).json({
+      error:
+        "department, designation, and phone are required for faculty accounts.",
+    });
+  }
+  if (role === "admin" && !phone) {
+    return res.status(400).json({
+      error: "phone is required for admin accounts.",
+    });
+  }
+  if (
+    (req.body?.created_at !== undefined || req.body?.createdAt !== undefined) &&
+    !createdAt
+  ) {
+    return res.status(400).json({ error: "created_at must be a valid date." });
   }
 
   try {
@@ -1044,6 +1417,12 @@ export const createMemberByAdmin = async (req: Request, res: Response) => {
       role,
       fullName,
       rollNumber,
+      phone,
+      department,
+      academicYear,
+      section,
+      designation,
+      createdAt,
     });
     if (created.error) {
       return res.status(409).json({ error: created.error });
@@ -1057,6 +1436,12 @@ export const createMemberByAdmin = async (req: Request, res: Response) => {
         role,
         fullName,
         rollNumber,
+        phone,
+        department,
+        academicYear,
+        section,
+        designation,
+        createdAt,
       });
       if (created.error) {
         return res.status(409).json({ error: created.error });
@@ -1069,7 +1454,10 @@ export const createMemberByAdmin = async (req: Request, res: Response) => {
   }
 };
 
-const parseAdminMemberIdParam = (req: Request, res: Response): number | null => {
+const parseAdminMemberIdParam = (
+  req: Request,
+  res: Response,
+): number | null => {
   const memberId = Number(req.params.memberId);
   if (!Number.isInteger(memberId) || memberId <= 0) {
     res.status(400).json({ error: "Invalid member id." });
@@ -1078,7 +1466,10 @@ const parseAdminMemberIdParam = (req: Request, res: Response): number | null => 
   return memberId;
 };
 
-const parseAdminRoleFilter = (req: Request, res: Response): AdminManagedRole | null => {
+const parseAdminRoleFilter = (
+  req: Request,
+  res: Response,
+): AdminManagedRole | null => {
   const roleValue = req.query.role;
   if (roleValue === undefined) {
     return null;
@@ -1097,7 +1488,7 @@ const parseAdminRoleFilter = (req: Request, res: Response): AdminManagedRole | n
   if (!role) {
     res
       .status(400)
-      .json({ error: "role query must be one of: all, student, faculty." });
+      .json({ error: "role query must be one of: all, student, faculty, admin." });
     return null;
   }
 
@@ -1118,22 +1509,22 @@ const parseAdminSearchFilter = (req: Request, res: Response): string | null => {
 
 const getInMemoryAdminMembers = (): AdminMemberSummary[] =>
   inMemoryUsers
-    .filter((user) => user.role === "student" || user.role === "faculty")
-    .map<AdminMemberSummary>((user) => {
-      const now = new Date().toISOString();
-      return {
-        id: Number(user.auth_user_id),
-        email: user.email,
-        role: user.role === "faculty" ? "faculty" : "student",
-        fullName: user.full_name ?? "",
-        rollNumber: user.roll_number ?? "",
-        createdAt: now,
-        updatedAt: now,
-      };
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .filter(
+      (user) =>
+        user.role === "student" ||
+        user.role === "faculty" ||
+        user.role === "admin",
+    )
+    .map(toInMemoryAdminMemberSummary)
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
 
-const matchesAdminMemberSearch = (member: AdminMemberSummary, search: string): boolean => {
+const matchesAdminMemberSearch = (
+  member: AdminMemberSummary,
+  search: string,
+): boolean => {
   if (!search) {
     return true;
   }
@@ -1141,14 +1532,19 @@ const matchesAdminMemberSearch = (member: AdminMemberSummary, search: string): b
   return (
     member.fullName.toLowerCase().includes(search) ||
     member.email.toLowerCase().includes(search) ||
-    member.rollNumber.toLowerCase().includes(search)
+    member.rollNumber.toLowerCase().includes(search) ||
+    member.phone.toLowerCase().includes(search) ||
+    member.department.toLowerCase().includes(search) ||
+    member.year.toLowerCase().includes(search) ||
+    member.section.toLowerCase().includes(search) ||
+    member.designation.toLowerCase().includes(search)
   );
 };
 
 const filterAdminMembers = (
   members: AdminMemberSummary[],
   roleFilter: AdminManagedRole | null,
-  search: string
+  search: string,
 ): AdminMemberSummary[] =>
   members.filter((member) => {
     if (roleFilter && member.role !== roleFilter) {
@@ -1157,13 +1553,24 @@ const filterAdminMembers = (
     return matchesAdminMemberSearch(member, search);
   });
 
+const getAdminMemberCounts = (members: AdminMemberSummary[]) => ({
+  total: members.length,
+  faculty: members.filter((member) => member.role === "faculty").length,
+  students: members.filter((member) => member.role === "student").length,
+  admins: members.filter((member) => member.role === "admin").length,
+});
+
 export const getAdminMembers = async (req: Request, res: Response) => {
   const roleFilter = parseAdminRoleFilter(req, res);
   if (roleFilter === null && req.query.role && req.query.role !== "all") {
     const roleValue = req.query.role;
     if (typeof roleValue === "string") {
       const normalized = roleValue.trim().toLowerCase();
-      if (normalized && normalized !== "all" && !toAdminManagedRole(normalized)) {
+      if (
+        normalized &&
+        normalized !== "all" &&
+        !toAdminManagedRole(normalized)
+      ) {
         return;
       }
     } else {
@@ -1181,7 +1588,7 @@ export const getAdminMembers = async (req: Request, res: Response) => {
     await seedDefaultAccounts(pool);
 
     const queryParams: unknown[] = [];
-    let whereClause = "WHERE role IN ('student', 'faculty')";
+    let whereClause = "WHERE role IN ('student', 'faculty', 'admin')";
     if (roleFilter) {
       queryParams.push(roleFilter);
       whereClause += ` AND role = $${queryParams.length}`;
@@ -1192,40 +1599,42 @@ export const getAdminMembers = async (req: Request, res: Response) => {
         ` AND (` +
         `LOWER(full_name) LIKE $${queryParams.length} ` +
         `OR LOWER(email) LIKE $${queryParams.length} ` +
-        `OR LOWER(COALESCE(roll_number, '')) LIKE $${queryParams.length}` +
+        `OR LOWER(COALESCE(roll_number, '')) LIKE $${queryParams.length} ` +
+        `OR LOWER(COALESCE(phone, '')) LIKE $${queryParams.length} ` +
+        `OR LOWER(COALESCE(department, '')) LIKE $${queryParams.length} ` +
+        `OR LOWER(COALESCE(academic_year, '')) LIKE $${queryParams.length} ` +
+        `OR LOWER(COALESCE(section, '')) LIKE $${queryParams.length} ` +
+        `OR LOWER(COALESCE(designation, '')) LIKE $${queryParams.length}` +
         `)`;
     }
 
     const result = await pool.query<AuthUserSummaryRow>(
       `
-        SELECT auth_user_id, email, role, full_name, roll_number, created_at, updated_at
+        SELECT auth_user_id, email, role, full_name, roll_number, phone,
+          department, academic_year, section, designation, created_at, updated_at
         FROM auth_users
         ${whereClause}
         ORDER BY created_at DESC
       `,
-      queryParams
+      queryParams,
     );
 
     const members = result.rows.map(toAdminMemberSummary);
     return res.json({
       members,
-      counts: {
-        total: members.length,
-        faculty: members.filter((member) => member.role === "faculty").length,
-        students: members.filter((member) => member.role === "student").length,
-      },
+      counts: getAdminMemberCounts(members),
     });
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
       ensureInMemorySeedUsers();
-      const members = filterAdminMembers(getInMemoryAdminMembers(), roleFilter, search);
+      const members = filterAdminMembers(
+        getInMemoryAdminMembers(),
+        roleFilter,
+        search,
+      );
       return res.json({
         members,
-        counts: {
-          total: members.length,
-          faculty: members.filter((member) => member.role === "faculty").length,
-          students: members.filter((member) => member.role === "student").length,
-        },
+        counts: getAdminMemberCounts(members),
       });
     }
 
@@ -1250,7 +1659,9 @@ export const updateAdminMember = async (req: Request, res: Response) => {
     return res.status(400).json({ error: "email and fullName are required." });
   }
   if (password && password.length < 6) {
-    return res.status(400).json({ error: "password must be at least 6 characters if provided." });
+    return res
+      .status(400)
+      .json({ error: "password must be at least 6 characters if provided." });
   }
 
   try {
@@ -1259,12 +1670,13 @@ export const updateAdminMember = async (req: Request, res: Response) => {
 
     const existingResult = await pool.query<AuthUserSummaryRow>(
       `
-        SELECT auth_user_id, email, role, full_name, roll_number, created_at, updated_at
+        SELECT auth_user_id, email, role, full_name, roll_number, phone,
+          department, academic_year, section, designation, created_at, updated_at
         FROM auth_users
         WHERE auth_user_id = $1
         LIMIT 1
       `,
-      [memberId]
+      [memberId],
     );
     const existing = existingResult.rows[0];
     if (!existing) {
@@ -1273,26 +1685,36 @@ export const updateAdminMember = async (req: Request, res: Response) => {
 
     const existingRole = toAdminManagedRole(existing.role);
     if (!existingRole) {
-      return res.status(400).json({ error: "Only faculty and student accounts can be edited." });
+      return res
+        .status(400)
+        .json({ error: "Only managed accounts can be edited." });
     }
 
     if (roleOverride !== undefined) {
       const requestedRole = toAdminManagedRole(roleOverride);
       if (!requestedRole || requestedRole !== existingRole) {
-        return res.status(400).json({ error: "Role changes are not supported." });
+        return res
+          .status(400)
+          .json({ error: "Role changes are not supported." });
       }
     }
 
-    if ((existingRole === "student" || existingRole === "faculty") && !rollNumber) {
-      return res.status(400).json({ error: "rollNumber is required for student and faculty accounts." });
+    if (!rollNumber) {
+      return res
+        .status(400)
+        .json({
+          error: `${getManagedMemberIdLabel(existingRole)} is required for ${existingRole} accounts.`,
+        });
     }
 
     const duplicateEmailResult = await pool.query(
       "SELECT auth_user_id FROM auth_users WHERE email = $1 AND auth_user_id <> $2 LIMIT 1",
-      [email, memberId]
+      [email, memberId],
     );
     if ((duplicateEmailResult.rowCount ?? 0) > 0) {
-      return res.status(409).json({ error: "Another account already uses this email." });
+      return res
+        .status(409)
+        .json({ error: "Another account already uses this email." });
     }
 
     const updateResult = password
@@ -1305,9 +1727,16 @@ export const updateAdminMember = async (req: Request, res: Response) => {
                 password_hash = $4,
                 updated_at = NOW()
             WHERE auth_user_id = $5
-            RETURNING auth_user_id, email, role, full_name, roll_number, created_at, updated_at
+            RETURNING auth_user_id, email, role, full_name, roll_number, phone,
+              department, academic_year, section, designation, created_at, updated_at
           `,
-          [email, fullName, rollNumber || null, hashPassword(password), memberId]
+          [
+            email,
+            fullName,
+            rollNumber || null,
+            hashPassword(password),
+            memberId,
+          ],
         )
       : await pool.query<AuthUserSummaryRow>(
           `
@@ -1317,9 +1746,10 @@ export const updateAdminMember = async (req: Request, res: Response) => {
                 roll_number = $3,
                 updated_at = NOW()
             WHERE auth_user_id = $4
-            RETURNING auth_user_id, email, role, full_name, roll_number, created_at, updated_at
+            RETURNING auth_user_id, email, role, full_name, roll_number, phone,
+              department, academic_year, section, designation, created_at, updated_at
           `,
-          [email, fullName, rollNumber || null, memberId]
+          [email, fullName, rollNumber || null, memberId],
         );
 
     const updated = updateResult.rows[0];
@@ -1327,51 +1757,59 @@ export const updateAdminMember = async (req: Request, res: Response) => {
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
       ensureInMemorySeedUsers();
-      const member = inMemoryUsers.find((user) => user.auth_user_id === memberId);
+      const member = inMemoryUsers.find(
+        (user) => user.auth_user_id === memberId,
+      );
       if (!member) {
         return res.status(404).json({ error: "Member not found." });
       }
       if (member.role !== "student" && member.role !== "faculty") {
-        return res.status(400).json({ error: "Only faculty and student accounts can be edited." });
+        if (member.role !== "admin") {
+          return res
+            .status(400)
+            .json({ error: "Only managed accounts can be edited." });
+        }
       }
 
       if (roleOverride !== undefined) {
         const requestedRole = toAdminManagedRole(roleOverride);
-        if (!requestedRole || requestedRole !== member.role) {
-          return res.status(400).json({ error: "Role changes are not supported." });
+        if (!requestedRole || requestedRole !== toManagedRole(member.role)) {
+          return res
+            .status(400)
+            .json({ error: "Role changes are not supported." });
         }
+      }
+
+      if (!rollNumber) {
+        return res
+          .status(400)
+          .json({
+            error: `${getManagedMemberIdLabel(toManagedRole(member.role))} is required for ${member.role} accounts.`,
+          });
       }
 
       if (
         inMemoryUsers.some(
-          (user) => user.auth_user_id !== memberId && user.email.toLowerCase() === email
+          (user) =>
+            user.auth_user_id !== memberId &&
+            user.email.toLowerCase() === email,
         )
       ) {
-        return res.status(409).json({ error: "Another account already uses this email." });
-      }
-
-      if ((member.role === "student" || member.role === "faculty") && !rollNumber) {
-        return res.status(400).json({ error: "rollNumber is required for student and faculty accounts." });
+        return res
+          .status(409)
+          .json({ error: "Another account already uses this email." });
       }
 
       member.email = email;
       member.full_name = fullName;
-      member.roll_number = rollNumber;
+      member.roll_number = rollNumber || null;
       if (password) {
         member.password_hash = hashPassword(password);
       }
+      member.updated_at = new Date().toISOString();
 
-      const now = new Date().toISOString();
       return res.json({
-        member: {
-          id: member.auth_user_id,
-          email: member.email,
-          role: member.role === "faculty" ? "faculty" : "student",
-          fullName: member.full_name,
-          rollNumber: member.roll_number ?? "",
-          createdAt: now,
-          updatedAt: now,
-        },
+        member: toInMemoryAdminMemberSummary(member),
       });
     }
 
@@ -1394,15 +1832,18 @@ export const deleteAdminMember = async (req: Request, res: Response) => {
       `
         DELETE FROM auth_users
         WHERE auth_user_id = $1
-          AND role IN ('student', 'faculty')
-        RETURNING auth_user_id, email, role, full_name, roll_number, created_at, updated_at
+          AND role IN ('student', 'faculty', 'admin')
+        RETURNING auth_user_id, email, role, full_name, roll_number, phone,
+          department, academic_year, section, designation, created_at, updated_at
       `,
-      [memberId]
+      [memberId],
     );
 
     const deleted = deletedResult.rows[0];
     if (!deleted) {
-      return res.status(404).json({ error: "Member not found or cannot be deleted." });
+      return res
+        .status(404)
+        .json({ error: "Member not found or cannot be deleted." });
     }
 
     return res.json({
@@ -1414,24 +1855,22 @@ export const deleteAdminMember = async (req: Request, res: Response) => {
       const index = inMemoryUsers.findIndex(
         (user) =>
           user.auth_user_id === memberId &&
-          (user.role === "student" || user.role === "faculty")
+          (user.role === "student" ||
+            user.role === "faculty" ||
+            user.role === "admin"),
       );
       if (index === -1) {
-        return res.status(404).json({ error: "Member not found or cannot be deleted." });
+        return res
+          .status(404)
+          .json({ error: "Member not found or cannot be deleted." });
       }
 
       const [deleted] = inMemoryUsers.splice(index, 1);
-      const now = new Date().toISOString();
       return res.json({
-        deleted: {
-          id: deleted.auth_user_id,
-          email: deleted.email,
-          role: deleted.role === "faculty" ? "faculty" : "student",
-          fullName: deleted.full_name,
-          rollNumber: deleted.roll_number ?? "",
-          createdAt: now,
-          updatedAt: now,
-        },
+        deleted: toInMemoryAdminMemberSummary({
+          ...deleted,
+          updated_at: new Date().toISOString(),
+        }),
       });
     }
 
@@ -1445,12 +1884,15 @@ export const getAdminDashboardData = async (req: Request, res: Response) => {
     await ensureAuthUsersTable(pool);
     await seedDefaultAccounts(pool);
 
-    const roleCounts = await pool.query<{ role: UserRole; total: number | string }>(
+    const roleCounts = await pool.query<{
+      role: UserRole;
+      total: number | string;
+    }>(
       `
         SELECT role, COUNT(*) AS total
         FROM auth_users
         GROUP BY role
-      `
+      `,
     );
 
     const countMap: Record<UserRole, number> = {
@@ -1468,7 +1910,7 @@ export const getAdminDashboardData = async (req: Request, res: Response) => {
         FROM auth_users
         ORDER BY created_at DESC
         LIMIT 10
-      `
+      `,
     );
 
     const recentFacultyResult = await pool.query<AuthUserSummaryRow>(
@@ -1478,7 +1920,7 @@ export const getAdminDashboardData = async (req: Request, res: Response) => {
         WHERE role = 'faculty'
         ORDER BY created_at DESC
         LIMIT 5
-      `
+      `,
     );
 
     const recentStudentsResult = await pool.query<AuthUserSummaryRow>(
@@ -1488,31 +1930,40 @@ export const getAdminDashboardData = async (req: Request, res: Response) => {
         WHERE role = 'student'
         ORDER BY created_at DESC
         LIMIT 5
-      `
+      `,
     );
 
-    const quizzesCount = await countOrZero(pool, "SELECT COUNT(*) AS value FROM quizzes");
-    const assignmentsCount = await countOrZero(pool, "SELECT COUNT(*) AS value FROM assignments");
-    const notesCount = await countOrZero(pool, "SELECT COUNT(*) AS value FROM notes");
+    const quizzesCount = await countOrZero(
+      pool,
+      "SELECT COUNT(*) AS value FROM quizzes",
+    );
+    const assignmentsCount = await countOrZero(
+      pool,
+      "SELECT COUNT(*) AS value FROM assignments",
+    );
+    const notesCount = await countOrZero(
+      pool,
+      "SELECT COUNT(*) AS value FROM notes",
+    );
     const pendingQuizReviews = await countOrZero(
       pool,
-      "SELECT COUNT(*) AS value FROM quiz_attempts WHERE status = 'Submitted' AND faculty_score IS NULL"
+      "SELECT COUNT(*) AS value FROM quiz_attempts WHERE status = 'Submitted' AND faculty_score IS NULL",
     );
     const pendingAssignmentReviews = await countOrZero(
       pool,
-      "SELECT COUNT(*) AS value FROM assignment_submissions WHERE faculty_score IS NULL"
+      "SELECT COUNT(*) AS value FROM assignment_submissions WHERE faculty_score IS NULL",
     );
     const recentStudentRegistrations = await countOrZero(
       pool,
-      "SELECT COUNT(*) AS value FROM auth_users WHERE role = 'student' AND created_at >= NOW() - INTERVAL '7 days'"
+      "SELECT COUNT(*) AS value FROM auth_users WHERE role = 'student' AND created_at >= NOW() - INTERVAL '7 days'",
     );
     const studentQuizParticipants = await countOrZero(
       pool,
-      "SELECT COUNT(DISTINCT student_id) AS value FROM quiz_attempts"
+      "SELECT COUNT(DISTINCT student_id) AS value FROM quiz_attempts",
     );
     const studentAssignmentSubmitters = await countOrZero(
       pool,
-      "SELECT COUNT(DISTINCT student_id) AS value FROM assignment_submissions"
+      "SELECT COUNT(DISTINCT student_id) AS value FROM assignment_submissions",
     );
 
     return res.json({
@@ -1581,8 +2032,12 @@ export const getAdminDashboardData = async (req: Request, res: Response) => {
       const students = inMemoryUsers.filter((u) => u.role === "student").length;
       const faculty = inMemoryUsers.filter((u) => u.role === "faculty").length;
       const admins = inMemoryUsers.filter((u) => u.role === "admin").length;
-      const recentFaculty = members.filter((m) => m.role === "faculty").slice(0, 5);
-      const recentStudents = members.filter((m) => m.role === "student").slice(0, 5);
+      const recentFaculty = members
+        .filter((m) => m.role === "faculty")
+        .slice(0, 5);
+      const recentStudents = members
+        .filter((m) => m.role === "student")
+        .slice(0, 5);
       return res.json({
         metrics: {
           totalMembers: inMemoryUsers.length,
@@ -1624,19 +2079,21 @@ export const loginUser = async (req: Request, res: Response) => {
   const ipAddress = getClientIp(req);
 
   if (!role || !email || !password) {
-    return res.status(400).json({ error: "role, email and password are required." });
+    return res
+      .status(400)
+      .json({ error: "role, email and password are required." });
   }
 
   const loginRequestRate = applyRateLimit(
     authRateLimitStore,
     toKey("auth", "login", "ip", ipAddress),
-    LOGIN_REQUEST_RATE_LIMIT
+    LOGIN_REQUEST_RATE_LIMIT,
   );
   if (!loginRequestRate.allowed) {
     return respondWithRateLimit(
       res,
       loginRequestRate.retryAfterMs,
-      "Too many login attempts from this network."
+      "Too many login attempts from this network.",
     );
   }
 
@@ -1644,21 +2101,27 @@ export const loginUser = async (req: Request, res: Response) => {
   const otpFailureKey = toKey("auth", "otp", "failure", email);
   const otpSendRateKey = toKey("auth", "otp", "send", email, ipAddress);
 
-  const loginLockoutRemaining = getLockoutRemainingMs(loginFailureLockouts, loginFailureKey);
+  const loginLockoutRemaining = getLockoutRemainingMs(
+    loginFailureLockouts,
+    loginFailureKey,
+  );
   if (loginLockoutRemaining > 0) {
     return respondWithRateLimit(
       res,
       loginLockoutRemaining,
-      "This account is temporarily locked due to failed login attempts."
+      "This account is temporarily locked due to failed login attempts.",
     );
   }
 
-  const otpLockoutRemaining = getLockoutRemainingMs(otpFailureLockouts, otpFailureKey);
+  const otpLockoutRemaining = getLockoutRemainingMs(
+    otpFailureLockouts,
+    otpFailureKey,
+  );
   if (otpLockoutRemaining > 0) {
     return respondWithRateLimit(
       res,
       otpLockoutRemaining,
-      "OTP verification is temporarily locked for this account."
+      "OTP verification is temporarily locked for this account.",
     );
   }
 
@@ -1666,21 +2129,25 @@ export const loginUser = async (req: Request, res: Response) => {
     const lockoutMs = recordFailureAndGetLockoutMs(
       loginFailureLockouts,
       loginFailureKey,
-      LOGIN_FAILURE_LOCKOUT
+      LOGIN_FAILURE_LOCKOUT,
     );
     if (lockoutMs > 0) {
       return respondWithRateLimit(
         res,
         lockoutMs,
-        "Too many failed login attempts for this account."
+        "Too many failed login attempts for this account.",
       );
     }
     return res.status(401).json({ error: "Invalid credentials." });
   };
 
-  const toLoginOtpResponse = (user: PublicUser, otp: string, challengeId: string) => ({
+  const toLoginOtpResponse = (
+    user: PublicUser,
+    otp: string,
+    challengeId: string,
+  ) => ({
     otpRequired: true,
-    message: "OTP sent to your email. Enter it to complete login.",
+    message: "Enter the 6-digit code to complete login.",
     challengeId,
     maskedEmail: maskEmail(user.email),
     expiresInSeconds: Math.floor(LOGIN_OTP_TTL_MS / 1000),
@@ -1692,16 +2159,24 @@ export const loginUser = async (req: Request, res: Response) => {
     await seedDefaultAccounts(pool);
     const user = await getUserByEmailFromDb(pool, email);
 
-    if (!user || user.role !== role || !verifyPassword(password, user.password_hash)) {
+    if (
+      !user ||
+      user.role !== role ||
+      !verifyPassword(password, user.password_hash)
+    ) {
       return respondForInvalidCredentials();
     }
 
-    const otpSendRate = applyRateLimit(authRateLimitStore, otpSendRateKey, OTP_RESEND_RATE_LIMIT);
+    const otpSendRate = applyRateLimit(
+      authRateLimitStore,
+      otpSendRateKey,
+      OTP_RESEND_RATE_LIMIT,
+    );
     if (!otpSendRate.allowed) {
       return respondWithRateLimit(
         res,
         otpSendRate.retryAfterMs,
-        "Too many OTP requests for this account."
+        "Too many OTP requests for this account.",
       );
     }
 
@@ -1719,20 +2194,24 @@ export const loginUser = async (req: Request, res: Response) => {
     if (isDatabaseConnectionError(error)) {
       ensureInMemorySeedUsers();
       const user = inMemoryUsers.find((item) => item.email === email);
-      if (!user || user.role !== role || !verifyPassword(password, user.password_hash)) {
+      if (
+        !user ||
+        user.role !== role ||
+        !verifyPassword(password, user.password_hash)
+      ) {
         return respondForInvalidCredentials();
       }
 
       const otpSendRate = applyRateLimit(
         authRateLimitStore,
         otpSendRateKey,
-        OTP_RESEND_RATE_LIMIT
+        OTP_RESEND_RATE_LIMIT,
       );
       if (!otpSendRate.allowed) {
         return respondWithRateLimit(
           res,
           otpSendRate.retryAfterMs,
-          "Too many OTP requests for this account."
+          "Too many OTP requests for this account.",
         );
       }
 
@@ -1776,23 +2255,26 @@ export const verifyLoginOtp = async (req: Request, res: Response) => {
   const otpVerifyRate = applyRateLimit(
     authRateLimitStore,
     toKey("auth", "otp", "verify", "ip", ipAddress),
-    OTP_VERIFY_REQUEST_RATE_LIMIT
+    OTP_VERIFY_REQUEST_RATE_LIMIT,
   );
   if (!otpVerifyRate.allowed) {
     return respondWithRateLimit(
       res,
       otpVerifyRate.retryAfterMs,
-      "Too many OTP verification attempts from this network."
+      "Too many OTP verification attempts from this network.",
     );
   }
 
   const otpFailureKey = toKey("auth", "otp", "failure", email);
-  const otpLockoutRemaining = getLockoutRemainingMs(otpFailureLockouts, otpFailureKey);
+  const otpLockoutRemaining = getLockoutRemainingMs(
+    otpFailureLockouts,
+    otpFailureKey,
+  );
   if (otpLockoutRemaining > 0) {
     return respondWithRateLimit(
       res,
       otpLockoutRemaining,
-      "OTP verification is temporarily locked for this account."
+      "OTP verification is temporarily locked for this account.",
     );
   }
 
@@ -1802,7 +2284,9 @@ export const verifyLoginOtp = async (req: Request, res: Response) => {
     if (challenge) {
       loginOtpChallenges.delete(challengeId);
     }
-    return res.status(400).json({ error: "OTP challenge is invalid or expired." });
+    return res
+      .status(400)
+      .json({ error: "OTP challenge is invalid or expired." });
   }
 
   if (challenge.email !== email || challenge.role !== role) {
@@ -1815,30 +2299,44 @@ export const verifyLoginOtp = async (req: Request, res: Response) => {
     const otpLockoutMs = recordFailureAndGetLockoutMs(
       otpFailureLockouts,
       otpFailureKey,
-      OTP_FAILURE_LOCKOUT
+      OTP_FAILURE_LOCKOUT,
     );
     if (otpLockoutMs > 0) {
       clearLoginChallengesForEmail(email);
       return respondWithRateLimit(
         res,
         otpLockoutMs,
-        "Too many invalid OTP attempts for this account."
+        "Too many invalid OTP attempts for this account.",
       );
     }
 
     if (challenge.attemptsRemaining <= 0) {
       loginOtpChallenges.delete(challengeId);
-      return res.status(401).json({ error: "Invalid OTP. Please login again." });
+      return res
+        .status(401)
+        .json({ error: "Invalid OTP. Please login again." });
     }
     return res.status(401).json({
       error: `Invalid OTP. ${challenge.attemptsRemaining} attempt(s) remaining.`,
     });
   }
 
+  // Generate JWT token for API authentication
+  const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
+  const token = jwt.sign(
+    {
+      userId: challenge.user.id,
+      email: challenge.user.email,
+      role: challenge.user.role,
+    },
+    JWT_SECRET,
+    { expiresIn: "24h" },
+  );
+
   loginOtpChallenges.delete(challengeId);
   clearFailures(otpFailureLockouts, otpFailureKey);
   clearFailures(loginFailureLockouts, toKey("auth", "login", "failure", email));
-  return res.json({ user: challenge.user });
+  return res.json({ user: challenge.user, token });
 };
 
 export const resendLoginOtp = async (req: Request, res: Response) => {
@@ -1851,13 +2349,13 @@ export const resendLoginOtp = async (req: Request, res: Response) => {
   const resendIpRate = applyRateLimit(
     authRateLimitStore,
     toKey("auth", "otp", "resend", "ip", ipAddress),
-    OTP_RESEND_RATE_LIMIT
+    OTP_RESEND_RATE_LIMIT,
   );
   if (!resendIpRate.allowed) {
     return respondWithRateLimit(
       res,
       resendIpRate.retryAfterMs,
-      "Too many OTP resend requests from this network."
+      "Too many OTP resend requests from this network.",
     );
   }
 
@@ -1867,29 +2365,34 @@ export const resendLoginOtp = async (req: Request, res: Response) => {
     if (challenge) {
       loginOtpChallenges.delete(challengeId);
     }
-    return res.status(400).json({ error: "OTP challenge is invalid or expired." });
+    return res
+      .status(400)
+      .json({ error: "OTP challenge is invalid or expired." });
   }
 
   const otpFailureKey = toKey("auth", "otp", "failure", challenge.email);
-  const otpLockoutRemaining = getLockoutRemainingMs(otpFailureLockouts, otpFailureKey);
+  const otpLockoutRemaining = getLockoutRemainingMs(
+    otpFailureLockouts,
+    otpFailureKey,
+  );
   if (otpLockoutRemaining > 0) {
     return respondWithRateLimit(
       res,
       otpLockoutRemaining,
-      "OTP verification is temporarily locked for this account."
+      "OTP verification is temporarily locked for this account.",
     );
   }
 
   const resendAccountRate = applyRateLimit(
     authRateLimitStore,
     toKey("auth", "otp", "resend", challenge.email, ipAddress),
-    OTP_RESEND_RATE_LIMIT
+    OTP_RESEND_RATE_LIMIT,
   );
   if (!resendAccountRate.allowed) {
     return respondWithRateLimit(
       res,
       resendAccountRate.retryAfterMs,
-      "Too many OTP requests for this account."
+      "Too many OTP requests for this account.",
     );
   }
 
@@ -1898,7 +2401,9 @@ export const resendLoginOtp = async (req: Request, res: Response) => {
     if (refreshed) {
       loginOtpChallenges.delete(challengeId);
     }
-    return res.status(400).json({ error: "OTP challenge is invalid or expired." });
+    return res
+      .status(400)
+      .json({ error: "OTP challenge is invalid or expired." });
   }
 
   try {
@@ -1919,7 +2424,7 @@ export const resendLoginOtp = async (req: Request, res: Response) => {
   }
 
   return res.json({
-    message: "A new OTP has been sent to your email.",
+    message: "A new 6-digit code has been sent.",
     challengeId,
     maskedEmail: maskEmail(refreshed.challenge.email),
     expiresInSeconds: Math.floor(LOGIN_OTP_TTL_MS / 1000),
@@ -1943,13 +2448,13 @@ export const requestPasswordReset = async (req: Request, res: Response) => {
   const resetRequestRate = applyRateLimit(
     authRateLimitStore,
     toKey("auth", "password-reset", "request", email, ipAddress),
-    PASSWORD_RESET_REQUEST_RATE_LIMIT
+    PASSWORD_RESET_REQUEST_RATE_LIMIT,
   );
   if (!resetRequestRate.allowed) {
     return respondWithRateLimit(
       res,
       resetRequestRate.retryAfterMs,
-      "Too many password reset requests."
+      "Too many password reset requests.",
     );
   }
 
@@ -1975,10 +2480,15 @@ export const requestPasswordReset = async (req: Request, res: Response) => {
             updated_at = NOW()
           WHERE auth_user_id = $3
         `,
-        [tokenHash, expiresAt.toISOString(), user.auth_user_id]
+        [tokenHash, expiresAt.toISOString(), user.auth_user_id],
       );
 
-      const resetUrl = buildPasswordResetUrl(token, email, user.role, frontendBaseUrl);
+      const resetUrl = buildPasswordResetUrl(
+        token,
+        email,
+        user.role,
+        frontendBaseUrl,
+      );
       try {
         await sendPasswordResetEmail({
           email,
@@ -1988,7 +2498,9 @@ export const requestPasswordReset = async (req: Request, res: Response) => {
       } catch (mailError) {
         if (
           mailError instanceof Error &&
-          mailError.message.toLowerCase().includes("unable to deliver security email")
+          mailError.message
+            .toLowerCase()
+            .includes("unable to deliver security email")
         ) {
           return res.status(503).json({ error: mailError.message });
         }
@@ -2006,14 +2518,21 @@ export const requestPasswordReset = async (req: Request, res: Response) => {
     if (isDatabaseConnectionError(error)) {
       ensureInMemorySeedUsers();
       const user = inMemoryUsers.find(
-        (item) => item.email === email && (!role || item.role === role)
+        (item) => item.email === email && (!role || item.role === role),
       );
       if (user) {
         const token = randomBytes(32).toString("hex");
         user.password_reset_token_hash = hashToken(token);
-        user.password_reset_expires_at = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+        user.password_reset_expires_at = new Date(
+          Date.now() + PASSWORD_RESET_TTL_MS,
+        );
 
-        const resetUrl = buildPasswordResetUrl(token, email, user.role, frontendBaseUrl);
+        const resetUrl = buildPasswordResetUrl(
+          token,
+          email,
+          user.role,
+          frontendBaseUrl,
+        );
         try {
           await sendPasswordResetEmail({
             email,
@@ -2023,7 +2542,9 @@ export const requestPasswordReset = async (req: Request, res: Response) => {
         } catch (mailError) {
           if (
             mailError instanceof Error &&
-            mailError.message.toLowerCase().includes("unable to deliver security email")
+            mailError.message
+              .toLowerCase()
+              .includes("unable to deliver security email")
           ) {
             return res.status(503).json({ error: mailError.message });
           }
@@ -2066,22 +2587,25 @@ export const resetPassword = async (req: Request, res: Response) => {
   const resetSubmitRate = applyRateLimit(
     authRateLimitStore,
     toKey("auth", "password-reset", "submit", ipAddress),
-    PASSWORD_RESET_SUBMIT_RATE_LIMIT
+    PASSWORD_RESET_SUBMIT_RATE_LIMIT,
   );
   if (!resetSubmitRate.allowed) {
     return respondWithRateLimit(
       res,
       resetSubmitRate.retryAfterMs,
-      "Too many password reset attempts from this network."
+      "Too many password reset attempts from this network.",
     );
   }
 
-  const resetLockoutRemaining = getLockoutRemainingMs(resetFailureLockouts, resetFailureKey);
+  const resetLockoutRemaining = getLockoutRemainingMs(
+    resetFailureLockouts,
+    resetFailureKey,
+  );
   if (resetLockoutRemaining > 0) {
     return respondWithRateLimit(
       res,
       resetLockoutRemaining,
-      "Password reset is temporarily locked due to invalid reset attempts."
+      "Password reset is temporarily locked due to invalid reset attempts.",
     );
   }
 
@@ -2101,7 +2625,7 @@ export const resetPassword = async (req: Request, res: Response) => {
           AND password_reset_expires_at > NOW()
         LIMIT 1
       `,
-      [tokenHash]
+      [tokenHash],
     );
 
     const user = result.rows[0];
@@ -2109,16 +2633,18 @@ export const resetPassword = async (req: Request, res: Response) => {
       const lockoutMs = recordFailureAndGetLockoutMs(
         resetFailureLockouts,
         resetFailureKey,
-        RESET_FAILURE_LOCKOUT
+        RESET_FAILURE_LOCKOUT,
       );
       if (lockoutMs > 0) {
         return respondWithRateLimit(
           res,
           lockoutMs,
-          "Too many invalid password reset attempts."
+          "Too many invalid password reset attempts.",
         );
       }
-      return res.status(400).json({ error: "Reset link is invalid or expired." });
+      return res
+        .status(400)
+        .json({ error: "Reset link is invalid or expired." });
     }
 
     await pool.query(
@@ -2131,20 +2657,24 @@ export const resetPassword = async (req: Request, res: Response) => {
           updated_at = NOW()
         WHERE auth_user_id = $2
       `,
-      [hashPassword(newPassword), user.auth_user_id]
+      [hashPassword(newPassword), user.auth_user_id],
     );
 
     clearFailures(resetFailureLockouts, resetFailureKey);
     clearLoginChallengesForEmail(user.email);
     return res.json({
-      message: "Password reset successful. You can now log in with your new password.",
+      message:
+        "Password reset successful. You can now log in with your new password.",
     });
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
       ensureInMemorySeedUsers();
       const now = Date.now();
       const user = inMemoryUsers.find((item) => {
-        if (!item.password_reset_token_hash || !item.password_reset_expires_at) {
+        if (
+          !item.password_reset_token_hash ||
+          !item.password_reset_expires_at
+        ) {
           return false;
         }
 
@@ -2158,16 +2688,18 @@ export const resetPassword = async (req: Request, res: Response) => {
         const lockoutMs = recordFailureAndGetLockoutMs(
           resetFailureLockouts,
           resetFailureKey,
-          RESET_FAILURE_LOCKOUT
+          RESET_FAILURE_LOCKOUT,
         );
         if (lockoutMs > 0) {
           return respondWithRateLimit(
             res,
             lockoutMs,
-            "Too many invalid password reset attempts."
+            "Too many invalid password reset attempts.",
           );
         }
-        return res.status(400).json({ error: "Reset link is invalid or expired." });
+        return res
+          .status(400)
+          .json({ error: "Reset link is invalid or expired." });
       }
 
       user.password_hash = hashPassword(newPassword);
@@ -2177,7 +2709,8 @@ export const resetPassword = async (req: Request, res: Response) => {
       clearLoginChallengesForEmail(user.email);
 
       return res.json({
-        message: "Password reset successful. You can now log in with your new password.",
+        message:
+          "Password reset successful. You can now log in with your new password.",
       });
     }
 

@@ -1,14 +1,29 @@
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type UserConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
-import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), "");
-  // For local development use: http://localhost:3000
+export default defineConfig(({ mode }): UserConfig => {
+  // Load environment variables - for production, it will load .env.production
+  const env = loadEnv(
+    mode === "production" ? "production" : mode,
+    process.cwd(),
+    "",
+  );
+
+  // For local development use: http://localhost:3000 (or override with VITE_API_PROXY_TARGET)
+  // For production use: https://eduhub-backend.onrender.com
   // For ngrok use your backend ngrok URL (e.g., https://abc123.ngrok-free.app)
-  const proxyTarget = env.VITE_API_PROXY_TARGET || "http://localhost:3000";
+
+  // Determine the API URL based on mode
+  let proxyTarget: string;
+  if (mode === "production") {
+    proxyTarget = env.VITE_API_URL || "https://eduhub-backend.onrender.com";
+  } else {
+    proxyTarget = env.VITE_API_PROXY_TARGET || "http://localhost:3000";
+  }
+
+  console.log(`[Vite] Running in ${mode} mode, proxy target: ${proxyTarget}`);
 
   return {
     server: {
@@ -34,10 +49,10 @@ export default defineConfig(({ mode }) => {
       include: ["@tanstack/react-query", "lucide-react"],
       force: true,
     },
-    plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+    plugins: [react()] as any,
     resolve: {
       alias: {
-        "@": path.resolve(__dirname, "./"),
+        "@": path.resolve(__dirname, "./src"),
       },
     },
   };

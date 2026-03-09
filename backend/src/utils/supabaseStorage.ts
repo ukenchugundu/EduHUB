@@ -4,7 +4,9 @@ type SupabaseUploadResult = {
 };
 
 const supabaseUrl = (process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
-const supabaseServiceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+const supabaseServiceRoleKey = (
+  process.env.SUPABASE_SERVICE_ROLE_KEY || ""
+).trim();
 const supabaseBucket = (process.env.SUPABASE_STORAGE_BUCKET || "").trim();
 
 const isConfigured = (): boolean =>
@@ -24,7 +26,7 @@ export const isSupabaseStorageConfigured = (): boolean => isConfigured();
 export const uploadBufferToSupabaseStorage = async (
   fileBuffer: Buffer,
   fileName: string,
-  mimeType: string
+  mimeType: string,
 ): Promise<SupabaseUploadResult | null> => {
   if (!isConfigured()) {
     return null;
@@ -47,7 +49,9 @@ export const uploadBufferToSupabaseStorage = async (
 
   if (!response.ok) {
     const errorBody = await response.text();
-    throw new Error(`Supabase Storage upload failed (${response.status}): ${errorBody}`);
+    throw new Error(
+      `Supabase Storage upload failed (${response.status}): ${errorBody}`,
+    );
   }
 
   return {

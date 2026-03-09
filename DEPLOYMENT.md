@@ -5,6 +5,7 @@
 ### 1. Docker Deployment (Recommended)
 
 #### Local Development
+
 ```bash
 # Start all services
 docker-compose up -d
@@ -17,6 +18,7 @@ docker-compose down
 ```
 
 #### Production Deployment
+
 ```bash
 # Create environment file
 cp .env.example .env.prod
@@ -31,32 +33,77 @@ docker-compose -f docker-compose.prod.yml logs -f
 
 ### 2. Render Deployment
 
-Your `render.yaml` is already configured. To deploy:
+Use the included root `render.yaml` to deploy the backend only.
 
 1. Push code to GitHub
 2. Connect repository to Render
-3. Render will automatically deploy using the configuration
+3. Render will detect `render.yaml`
+4. Set the required environment variables in Render
 
-Services created:
-- Database: PostgreSQL (Free tier)
+Service created:
+
 - Backend: Node.js API
-- Frontend: Static site
+
+Recommended setup:
+
+- Frontend: Vercel
+- Backend: Render
+- Database: Supabase Postgres
+
+Minimum backend env vars on Render:
+
+```bash
+DATABASE_URL=postgresql://...
+DB_SSL=true
+JWT_SECRET=...
+FRONTEND_BASE_URL=https://your-frontend-domain.vercel.app
+CORS_ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_STORAGE_BUCKET=...
+EMAIL_PROVIDER=dev
+EMAIL_FROM=no-reply@yourdomain.com
+```
 
 ### 3. Vercel Deployment (Frontend Only)
 
-For frontend-only deployment:
+Deploy the frontend and backend as separate services:
+
+- Frontend: Vercel
+- Backend: Render / Railway / VPS / Docker host
+- Database: Supabase Postgres
+
+#### Frontend on Vercel
+
+1. Create a new Vercel project
+2. Set the project root directory to `frontend`
+3. Add these environment variables in Vercel:
 
 ```bash
-# Install Vercel CLI
-npm i -g vercel
-
-# Deploy
-vercel --prod
+VITE_API_URL=https://your-backend-url.example.com
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
+
+4. Deploy the frontend
+
+The frontend now includes its own `frontend/vercel.json` with SPA routing support for React Router refreshes.
+
+#### Backend separately
+
+Deploy `backend/` to a normal Node host.
+
+Do not deploy the current backend to Vercel as-is because it uses:
+
+- `app.listen(...)`
+- local `/uploads`
+- `multer` temp files
+- traditional long-running Node server behavior
 
 ### 4. Manual Deployment
 
 #### Prerequisites
+
 - Node.js 20+
 - PostgreSQL 15+
 - PM2 (for process management)
@@ -64,6 +111,7 @@ vercel --prod
 #### Steps
 
 1. **Setup Database**
+
 ```bash
 # Create database
 createdb eduhub
@@ -77,6 +125,7 @@ psql -d eduhub -f database/migrations/005_alter_quizzes_table.sql
 ```
 
 2. **Deploy Backend**
+
 ```bash
 cd backend
 npm install
@@ -85,6 +134,7 @@ pm2 start dist/index.js --name eduhub-backend
 ```
 
 3. **Deploy Frontend**
+
 ```bash
 cd frontend
 npm install
@@ -95,6 +145,7 @@ npm run build
 ## Environment Variables
 
 ### Backend (.env)
+
 ```
 DATABASE_URL=postgresql://user:password@localhost:5432/eduhub
 DB_SSL=false
@@ -102,9 +153,12 @@ PORT=3000
 NODE_ENV=production
 ```
 
-### Frontend (.env.local)
+### Frontend (`frontend/.env` or Vercel env vars)
+
 ```
 VITE_API_URL=http://localhost:3000
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
 
 ## Health Checks
@@ -116,6 +170,7 @@ VITE_API_URL=http://localhost:3000
 ## Monitoring
 
 ### Docker Logs
+
 ```bash
 # All services
 docker-compose logs -f
@@ -125,6 +180,7 @@ docker-compose logs -f backend
 ```
 
 ### PM2 Monitoring
+
 ```bash
 pm2 status
 pm2 logs eduhub-backend
@@ -134,17 +190,20 @@ pm2 monit
 ## Scaling
 
 ### Docker Scaling
+
 ```bash
 # Scale backend instances
 docker-compose up -d --scale backend=3
 ```
 
 ### Load Balancer Configuration
+
 Add nginx reverse proxy for multiple backend instances.
 
 ## Backup
 
 ### Database Backup
+
 ```bash
 # Docker
 docker exec eduhub-db pg_dump -U postgres eduhub > backup.sql
@@ -154,6 +213,7 @@ pg_dump -U postgres eduhub > backup.sql
 ```
 
 ### File Uploads Backup
+
 ```bash
 # Backup uploads directory
 tar -czf uploads-backup.tar.gz backend/uploads/
@@ -164,12 +224,14 @@ tar -czf uploads-backup.tar.gz backend/uploads/
 For production, configure SSL certificates:
 
 1. **Using Let's Encrypt with Docker**
+
 ```bash
 # Add certbot to docker-compose
 # Update nginx config for SSL
 ```
 
 2. **Using Cloudflare**
+
 - Point domain to server IP
 - Enable SSL in Cloudflare dashboard
 
@@ -193,6 +255,7 @@ For production, configure SSL certificates:
    - Check file size limits
 
 ### Debug Commands
+
 ```bash
 # Check container status
 docker-compose ps

@@ -1,47 +1,55 @@
-import { Pool } from 'pg';
-import fs from 'fs';
-import path from 'path';
+import { Pool } from "pg";
+import fs from "fs";
+import path from "path";
 
-const readDatabaseUrlFromEnvFile = (): string | undefined => {
-  const envPath = path.resolve(__dirname, '../../.env');
-  if (!fs.existsSync(envPath)) {
-    return undefined;
+const loadEnvFile = (filePath: string): void => {
+  if (!fs.existsSync(filePath)) {
+    return;
   }
 
-  const content = fs.readFileSync(envPath, 'utf8');
-  for (const rawLine of content.split('\n')) {
+  const fileContent = fs.readFileSync(filePath, "utf8");
+  for (const rawLine of fileContent.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('#') || !line.includes('=')) {
+    if (!line || line.startsWith("#")) {
       continue;
     }
 
-    const separatorIndex = line.indexOf('=');
-    const key = line.slice(0, separatorIndex).trim();
-    const value = line.slice(separatorIndex + 1).trim();
-    if (key === 'DATABASE_URL') {
-      return value.replace(/^['"]|['"]$/g, '');
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
     }
-  }
 
-  return undefined;
+    const key = line.slice(0, separatorIndex).trim();
+    if (!key || process.env[key] !== undefined) {
+      continue;
+    }
+
+    let value = line.slice(separatorIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    process.env[key] = value;
+  }
 };
 
-const defaultDatabaseUrl = 'postgresql://user:password@localhost:5432/eduhub';
-const connectionString =
-  process.env.DATABASE_URL || readDatabaseUrlFromEnvFile() || defaultDatabaseUrl;
-const forceSsl = process.env.DB_SSL?.toLowerCase() === 'true';
-const disableSsl = process.env.DB_SSL?.toLowerCase() === 'false';
-const isSupabaseConnection = connectionString.includes('.supabase.co');
-const sslConfig =
-  disableSsl ? false : forceSsl || isSupabaseConnection ? { rejectUnauthorized: false } : false;
+const workspaceRoot = path.resolve(__dirname, "..", "..", "..");
+loadEnvFile(path.join(workspaceRoot, ".env"));
+loadEnvFile(path.join(workspaceRoot, "backend", ".env"));
 
-if (!process.env.DATABASE_URL) {
-  console.warn(
-    `[db] DATABASE_URL not found in process env. Using ${
-      connectionString === defaultDatabaseUrl ? 'default local URL' : 'backend/.env'
-    }.`
-  );
-}
+const connectionString =
+  process.env.DATABASE_URL || "postgresql://postgres:password@localhost:5432/eduhub";
+const forceSsl = process.env.DB_SSL?.toLowerCase() === "true";
+const disableSsl = process.env.DB_SSL?.toLowerCase() === "false";
+const isSupabaseConnection = connectionString.includes(".supabase.co");
+const sslConfig = disableSsl
+  ? false
+  : forceSsl || isSupabaseConnection
+    ? { rejectUnauthorized: false }
+    : false;
 
 const pool = new Pool({
   connectionString,

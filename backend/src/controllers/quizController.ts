@@ -60,7 +60,8 @@ const sampleQuizPayload: NormalizedQuizPayload = {
   duration: "20 mins",
   questions: [
     {
-      question: "What is the time complexity of binary search in a sorted array?",
+      question:
+        "What is the time complexity of binary search in a sorted array?",
       type: "mcq",
       options: ["O(1)", "O(log n)", "O(n)", "O(n log n)"],
       correctAnswer: "O(log n)",
@@ -98,7 +99,11 @@ const normalizeQuestionType = (value: unknown): QuestionType | null => {
     return "mcq";
   }
 
-  if (normalized === "fill_blank" || normalized === "fillblank" || normalized === "fill") {
+  if (
+    normalized === "fill_blank" ||
+    normalized === "fillblank" ||
+    normalized === "fill"
+  ) {
     return "fill_blank";
   }
 
@@ -178,7 +183,7 @@ const isDatabaseConnectionError = (error: unknown): boolean => {
 const columnExists = async (
   db: Pool | PoolClient,
   tableName: string,
-  columnName: string
+  columnName: string,
 ): Promise<boolean> => {
   const result = await db.query(
     `
@@ -190,13 +195,15 @@ const columnExists = async (
           AND column_name = $2
       ) AS exists
     `,
-    [tableName, columnName]
+    [tableName, columnName],
   );
 
   return Boolean(result.rows[0]?.exists);
 };
 
-const resolveQuizIdColumn = async (db: Pool | PoolClient): Promise<"quiz_id" | "id"> => {
+const resolveQuizIdColumn = async (
+  db: Pool | PoolClient,
+): Promise<"quiz_id" | "id"> => {
   if (await columnExists(db, "quizzes", "quiz_id")) {
     return "quiz_id";
   }
@@ -210,7 +217,7 @@ const resolveQuizIdColumn = async (db: Pool | PoolClient): Promise<"quiz_id" | "
 
 const ensureQuizQuestionTables = async (
   db: Pool | PoolClient,
-  quizIdColumn: "quiz_id" | "id"
+  quizIdColumn: "quiz_id" | "id",
 ): Promise<void> => {
   await db.query(`
     CREATE TABLE IF NOT EXISTS questions (
@@ -231,23 +238,31 @@ const ensureQuizQuestionTables = async (
     )
   `);
 
-  await db.query("ALTER TABLE questions ADD COLUMN IF NOT EXISTS question_type VARCHAR(30)");
   await db.query(
-    "ALTER TABLE questions ALTER COLUMN question_type SET DEFAULT 'mcq'"
+    "ALTER TABLE questions ADD COLUMN IF NOT EXISTS question_type VARCHAR(30)",
   );
   await db.query(
-    "UPDATE questions SET question_type = 'mcq' WHERE question_type IS NULL OR question_type = ''"
+    "ALTER TABLE questions ALTER COLUMN question_type SET DEFAULT 'mcq'",
   );
-  await db.query("ALTER TABLE questions ALTER COLUMN question_type SET NOT NULL");
+  await db.query(
+    "UPDATE questions SET question_type = 'mcq' WHERE question_type IS NULL OR question_type = ''",
+  );
+  await db.query(
+    "ALTER TABLE questions ALTER COLUMN question_type SET NOT NULL",
+  );
 
-  await db.query("ALTER TABLE questions ADD COLUMN IF NOT EXISTS correct_answer_text TEXT");
   await db.query(
-    "UPDATE questions SET correct_answer_text = '' WHERE correct_answer_text IS NULL"
+    "ALTER TABLE questions ADD COLUMN IF NOT EXISTS correct_answer_text TEXT",
   );
   await db.query(
-    "ALTER TABLE questions ALTER COLUMN correct_answer_text SET DEFAULT ''"
+    "UPDATE questions SET correct_answer_text = '' WHERE correct_answer_text IS NULL",
   );
-  await db.query("ALTER TABLE questions ALTER COLUMN correct_answer_text SET NOT NULL");
+  await db.query(
+    "ALTER TABLE questions ALTER COLUMN correct_answer_text SET DEFAULT ''",
+  );
+  await db.query(
+    "ALTER TABLE questions ALTER COLUMN correct_answer_text SET NOT NULL",
+  );
 };
 
 const parseQuizIdParam = (req: Request, res: Response): number | null => {
@@ -268,7 +283,8 @@ const isValidQuestion = (question: unknown): question is QuizQuestionInput => {
   const hasQuestionText =
     typeof payload.question === "string" && payload.question.trim().length > 0;
   const hasCorrectAnswer =
-    typeof payload.correctAnswer === "string" && payload.correctAnswer.trim().length > 0;
+    typeof payload.correctAnswer === "string" &&
+    payload.correctAnswer.trim().length > 0;
 
   if (!hasQuestionText || !hasCorrectAnswer) {
     return false;
@@ -286,11 +302,15 @@ const isValidQuestion = (question: unknown): question is QuizQuestionInput => {
   const hasOptions =
     Array.isArray(payload.options) &&
     payload.options.length > 1 &&
-    payload.options.every((option) => typeof option === "string" && option.trim().length > 0);
+    payload.options.every(
+      (option) => typeof option === "string" && option.trim().length > 0,
+    );
   return hasOptions;
 };
 
-const normalizeQuizPayload = (body: unknown): {
+const normalizeQuizPayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: NormalizedQuizPayload;
 } => {
@@ -327,33 +347,36 @@ const normalizeQuizPayload = (body: unknown): {
     };
   }
 
-  const questions: NormalizedQuizQuestion[] = rawQuestions.map((rawQuestion) => {
-    const questionType = normalizeQuestionType(rawQuestion.type ?? "mcq") ?? "mcq";
-    if (questionType === "fill_blank") {
+  const questions: NormalizedQuizQuestion[] = rawQuestions.map(
+    (rawQuestion) => {
+      const questionType =
+        normalizeQuestionType(rawQuestion.type ?? "mcq") ?? "mcq";
+      if (questionType === "fill_blank") {
+        return {
+          question: rawQuestion.question.trim(),
+          type: questionType,
+          options: [],
+          correctAnswer: rawQuestion.correctAnswer.trim(),
+        };
+      }
+
+      if (questionType === "true_false") {
+        return {
+          question: rawQuestion.question.trim(),
+          type: questionType,
+          options: [...defaultTrueFalseOptions],
+          correctAnswer: normalizeTrueFalseAnswer(rawQuestion.correctAnswer)!,
+        };
+      }
+
       return {
         question: rawQuestion.question.trim(),
         type: questionType,
-        options: [],
+        options: (rawQuestion.options ?? []).map((option) => option.trim()),
         correctAnswer: rawQuestion.correctAnswer.trim(),
       };
-    }
-
-    if (questionType === "true_false") {
-      return {
-        question: rawQuestion.question.trim(),
-        type: questionType,
-        options: [...defaultTrueFalseOptions],
-        correctAnswer: normalizeTrueFalseAnswer(rawQuestion.correctAnswer)!,
-      };
-    }
-
-    return {
-      question: rawQuestion.question.trim(),
-      type: questionType,
-      options: (rawQuestion.options ?? []).map((option) => option.trim()),
-      correctAnswer: rawQuestion.correctAnswer.trim(),
-    };
-  });
+    },
+  );
 
   const hasInvalidMcqQuestion = questions.some((question) => {
     if (question.type !== "mcq") {
@@ -378,11 +401,14 @@ const normalizeQuizPayload = (body: unknown): {
   };
 };
 
-const normalizeStatusPayload = (body: unknown): {
+const normalizeStatusPayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: { status: QuizStatus };
 } => {
-  const rawBody = body && typeof body === "object" ? (body as { status?: unknown }) : {};
+  const rawBody =
+    body && typeof body === "object" ? (body as { status?: unknown }) : {};
   if (typeof rawBody.status !== "string" || !rawBody.status.trim()) {
     return { error: "status is required" };
   }
@@ -395,7 +421,9 @@ const normalizeStatusPayload = (body: unknown): {
   return { payload: { status } };
 };
 
-const buildInMemoryQuestions = (questions: NormalizedQuizQuestion[]): InMemoryQuestion[] =>
+const buildInMemoryQuestions = (
+  questions: NormalizedQuizQuestion[],
+): InMemoryQuestion[] =>
   questions.map((question) => ({
     question_id: inMemoryQuestionId++,
     question_text: question.question,
@@ -410,7 +438,7 @@ const buildInMemoryQuestions = (questions: NormalizedQuizQuestion[]): InMemoryQu
 
 const createInMemoryQuiz = (
   payload: NormalizedQuizPayload,
-  status: QuizStatus = "Draft"
+  status: QuizStatus = "Draft",
 ): InMemoryQuiz => {
   const quiz: InMemoryQuiz = {
     quiz_id: inMemoryQuizId++,
@@ -436,9 +464,12 @@ const ensureSampleQuizInMemory = (): void => {
 const loadQuizWithRelations = async (
   db: Pool | PoolClient,
   idColumn: "quiz_id" | "id",
-  quizId: number
+  quizId: number,
 ): Promise<Record<string, unknown> | null> => {
-  const quizResult = await db.query(`SELECT * FROM quizzes WHERE ${idColumn} = $1`, [quizId]);
+  const quizResult = await db.query(
+    `SELECT * FROM quizzes WHERE ${idColumn} = $1`,
+    [quizId],
+  );
   const quiz = quizResult.rows[0];
   if (!quiz) {
     return null;
@@ -449,14 +480,14 @@ const loadQuizWithRelations = async (
 
   const questionsResult = await db.query(
     "SELECT * FROM questions WHERE quiz_id = $1 ORDER BY question_id ASC",
-    [normalizedQuizId]
+    [normalizedQuizId],
   );
   const questions = questionsResult.rows;
 
   for (const question of questions) {
     const optionsResult = await db.query(
       "SELECT * FROM options WHERE question_id = $1 ORDER BY option_id ASC",
-      [question.question_id]
+      [question.question_id],
     );
     question.options = optionsResult.rows;
   }
@@ -467,9 +498,11 @@ const loadQuizWithRelations = async (
 
 const loadAllQuizzesWithRelations = async (
   db: Pool | PoolClient,
-  idColumn: "quiz_id" | "id"
+  idColumn: "quiz_id" | "id",
 ): Promise<Record<string, unknown>[]> => {
-  const quizzesResult = await db.query(`SELECT * FROM quizzes ORDER BY ${idColumn} DESC`);
+  const quizzesResult = await db.query(
+    `SELECT * FROM quizzes ORDER BY ${idColumn} DESC`,
+  );
   const quizzes = quizzesResult.rows;
 
   for (const quiz of quizzes) {
@@ -478,14 +511,14 @@ const loadAllQuizzesWithRelations = async (
 
     const questionsResult = await db.query(
       "SELECT * FROM questions WHERE quiz_id = $1 ORDER BY question_id ASC",
-      [normalizedQuizId]
+      [normalizedQuizId],
     );
     const questions = questionsResult.rows;
 
     for (const question of questions) {
       const optionsResult = await db.query(
         "SELECT * FROM options WHERE question_id = $1 ORDER BY option_id ASC",
-        [question.question_id]
+        [question.question_id],
       );
       question.options = optionsResult.rows;
     }
@@ -499,7 +532,7 @@ const loadAllQuizzesWithRelations = async (
 const insertQuizQuestions = async (
   db: Pool | PoolClient,
   quizId: number,
-  questions: NormalizedQuizQuestion[]
+  questions: NormalizedQuizQuestion[],
 ): Promise<void> => {
   for (const question of questions) {
     const questionResult = await db.query(
@@ -508,14 +541,14 @@ const insertQuizQuestions = async (
         VALUES ($1, $2, $3, $4)
         RETURNING question_id
       `,
-      [quizId, question.question, question.type, question.correctAnswer]
+      [quizId, question.question, question.type, question.correctAnswer],
     );
 
     const questionId = questionResult.rows[0]?.question_id;
     for (const option of question.options) {
       await db.query(
         "INSERT INTO options (question_id, option_text, is_correct) VALUES ($1, $2, $3)",
-        [questionId, option, option === question.correctAnswer]
+        [questionId, option, option === question.correctAnswer],
       );
     }
   }
@@ -523,7 +556,7 @@ const insertQuizQuestions = async (
 
 const createSampleQuizInDatabase = async (
   db: Pool | PoolClient,
-  quizIdColumn: "quiz_id" | "id"
+  quizIdColumn: "quiz_id" | "id",
 ): Promise<Record<string, unknown> | null> => {
   const hasQuestionsColumn = await columnExists(db, "quizzes", "questions");
 
@@ -536,7 +569,7 @@ const createSampleQuizInDatabase = async (
           sampleQuizPayload.questions.length,
           sampleQuizPayload.duration,
           "Published",
-        ]
+        ],
       )
     : await db.query(
         "INSERT INTO quizzes (cls, title, duration, status) VALUES ($1, $2, $3, $4) RETURNING *",
@@ -545,7 +578,7 @@ const createSampleQuizInDatabase = async (
           sampleQuizPayload.title,
           sampleQuizPayload.duration,
           "Published",
-        ]
+        ],
       );
 
   const createdQuiz = quizResult.rows[0];
@@ -570,7 +603,9 @@ export const getQuizzes = async (req: Request, res: Response) => {
     res.json(quizzes);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      console.warn("Database unavailable while fetching quizzes. Returning in-memory quizzes.");
+      console.warn(
+        "Database unavailable while fetching quizzes. Returning in-memory quizzes.",
+      );
       ensureSampleQuizInMemory();
       return res.json(inMemoryQuizzes);
     }
@@ -612,7 +647,9 @@ export const getQuizById = async (req: Request, res: Response) => {
 export const createQuiz = async (req: Request, res: Response) => {
   const normalized = normalizeQuizPayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const payload = normalized.payload;
@@ -627,17 +664,27 @@ export const createQuiz = async (req: Request, res: Response) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
-    const hasQuestionsColumn = await columnExists(client, "quizzes", "questions");
+    const hasQuestionsColumn = await columnExists(
+      client,
+      "quizzes",
+      "questions",
+    );
     const status: QuizStatus = "Draft";
 
     const quizResult = hasQuestionsColumn
       ? await client.query(
           "INSERT INTO quizzes (cls, title, questions, duration, status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-          [payload.cls, payload.title, payload.questions.length, payload.duration, status]
+          [
+            payload.cls,
+            payload.title,
+            payload.questions.length,
+            payload.duration,
+            status,
+          ],
         )
       : await client.query(
           "INSERT INTO quizzes (cls, title, duration, status) VALUES ($1, $2, $3, $4) RETURNING *",
-          [payload.cls, payload.title, payload.duration, status]
+          [payload.cls, payload.title, payload.duration, status],
         );
 
     const createdQuiz = quizResult.rows[0];
@@ -646,7 +693,9 @@ export const createQuiz = async (req: Request, res: Response) => {
 
     await client.query("COMMIT");
     const quiz = await loadQuizWithRelations(client, quizIdColumn, quizId);
-    res.status(201).json(quiz ?? { ...createdQuiz, quiz_id: quizId, questions: [] });
+    res
+      .status(201)
+      .json(quiz ?? { ...createdQuiz, quiz_id: quizId, questions: [] });
   } catch (error: unknown) {
     if (client && transactionStarted) {
       await client.query("ROLLBACK");
@@ -654,12 +703,15 @@ export const createQuiz = async (req: Request, res: Response) => {
 
     if (isDatabaseConnectionError(error)) {
       const quiz = createInMemoryQuiz(payload, "Draft");
-      console.warn("Database unavailable while creating quiz. Saved quiz in in-memory store.");
+      console.warn(
+        "Database unavailable while creating quiz. Saved quiz in in-memory store.",
+      );
       return res.status(201).json(quiz);
     }
 
     console.error("Error creating quiz:", error);
-    const message = error instanceof Error ? error.message : "Internal server error";
+    const message =
+      error instanceof Error ? error.message : "Internal server error";
     res.status(500).json({ error: message });
   } finally {
     client?.release();
@@ -674,7 +726,9 @@ export const updateQuiz = async (req: Request, res: Response) => {
 
   const normalized = normalizeQuizPayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const payload = normalized.payload;
@@ -685,19 +739,30 @@ export const updateQuiz = async (req: Request, res: Response) => {
     client = await pool.connect();
     const quizIdColumn = await resolveQuizIdColumn(client);
     await ensureQuizQuestionTables(client, quizIdColumn);
+    await ensureQuizAttemptTables(client, quizIdColumn);
 
     await client.query("BEGIN");
     transactionStarted = true;
 
-    const hasQuestionsColumn = await columnExists(client, "quizzes", "questions");
+    const hasQuestionsColumn = await columnExists(
+      client,
+      "quizzes",
+      "questions",
+    );
     const updateResult = hasQuestionsColumn
       ? await client.query(
           `UPDATE quizzes SET cls = $1, title = $2, duration = $3, questions = $4 WHERE ${quizIdColumn} = $5 RETURNING *`,
-          [payload.cls, payload.title, payload.duration, payload.questions.length, quizId]
+          [
+            payload.cls,
+            payload.title,
+            payload.duration,
+            payload.questions.length,
+            quizId,
+          ],
         )
       : await client.query(
           `UPDATE quizzes SET cls = $1, title = $2, duration = $3 WHERE ${quizIdColumn} = $4 RETURNING *`,
-          [payload.cls, payload.title, payload.duration, quizId]
+          [payload.cls, payload.title, payload.duration, quizId],
         );
 
     if (!updateResult.rowCount) {
@@ -705,11 +770,24 @@ export const updateQuiz = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Quiz not found" });
     }
 
+    // Reset quiz attempts when quiz is updated - allows students to attempt again
+    const deletedAttempts = await client.query(
+      "DELETE FROM quiz_attempts WHERE quiz_id = $1 RETURNING attempt_id",
+      [quizId],
+    );
+    console.log(
+      `[Quiz Update] Deleted ${deletedAttempts.rowCount || 0} existing attempts for quiz ${quizId}`,
+    );
+
     await client.query("DELETE FROM questions WHERE quiz_id = $1", [quizId]);
     await insertQuizQuestions(client, quizId, payload.questions);
 
     await client.query("COMMIT");
     const quiz = await loadQuizWithRelations(client, quizIdColumn, quizId);
+
+    console.log(
+      `[Quiz Update] Quiz ${quizId} updated and reset - students can attempt again`,
+    );
     res.json(quiz);
   } catch (error) {
     if (client && transactionStarted) {
@@ -722,10 +800,31 @@ export const updateQuiz = async (req: Request, res: Response) => {
         return res.status(404).json({ error: "Quiz not found" });
       }
 
+      // Reset in-memory attempts when quiz is updated
+      const attemptIndexesToRemove: number[] = [];
+      inMemoryQuizAttempts.forEach((attempt, index) => {
+        if (attempt.quiz_id === quizId) {
+          attemptIndexesToRemove.push(index);
+        }
+      });
+
+      // Remove attempts in reverse order to maintain indices
+      attemptIndexesToRemove.reverse().forEach((index) => {
+        inMemoryQuizAttempts.splice(index, 1);
+      });
+
+      console.log(
+        `[Quiz Update] Deleted ${attemptIndexesToRemove.length} in-memory attempts for quiz ${quizId}`,
+      );
+
       quiz.cls = payload.cls;
       quiz.title = payload.title;
       quiz.duration = payload.duration;
       quiz.questions = buildInMemoryQuestions(payload.questions);
+
+      console.log(
+        `[Quiz Update] In-memory quiz ${quizId} updated and reset - students can attempt again`,
+      );
       return res.json(quiz);
     }
 
@@ -744,7 +843,9 @@ export const updateQuizStatus = async (req: Request, res: Response) => {
 
   const normalized = normalizeStatusPayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const { status } = normalized.payload;
@@ -753,7 +854,7 @@ export const updateQuizStatus = async (req: Request, res: Response) => {
     const quizIdColumn = await resolveQuizIdColumn(pool);
     const result = await pool.query(
       `UPDATE quizzes SET status = $1 WHERE ${quizIdColumn} = $2 RETURNING *`,
-      [status, quizId]
+      [status, quizId],
     );
     if (!result.rowCount) {
       return res.status(404).json({ error: "Quiz not found" });
@@ -785,7 +886,10 @@ export const deleteQuiz = async (req: Request, res: Response) => {
 
   try {
     const idColumn = await resolveQuizIdColumn(pool);
-    const result = await pool.query(`DELETE FROM quizzes WHERE ${idColumn} = $1`, [quizId]);
+    const result = await pool.query(
+      `DELETE FROM quizzes WHERE ${idColumn} = $1`,
+      [quizId],
+    );
     if (!result.rowCount) {
       return res.status(404).json({ error: "Quiz not found" });
     }
@@ -793,7 +897,9 @@ export const deleteQuiz = async (req: Request, res: Response) => {
     res.sendStatus(204);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      const quizIndex = inMemoryQuizzes.findIndex((quiz) => quiz.quiz_id === quizId);
+      const quizIndex = inMemoryQuizzes.findIndex(
+        (quiz) => quiz.quiz_id === quizId,
+      );
       if (quizIndex === -1) {
         return res.status(404).json({ error: "Quiz not found" });
       }
@@ -890,7 +996,10 @@ const toIsoString = (value: unknown): string => {
 };
 
 const remainingSecondsFromIso = (expiresAtIso: string): number =>
-  Math.max(0, Math.floor((new Date(expiresAtIso).getTime() - Date.now()) / 1000));
+  Math.max(
+    0,
+    Math.floor((new Date(expiresAtIso).getTime() - Date.now()) / 1000),
+  );
 
 const parseDurationToSeconds = (duration: string): number => {
   const fallback = 30 * 60;
@@ -905,13 +1014,16 @@ const parseDurationToSeconds = (duration: string): number => {
     const second = Number(clockMatch[2]);
     const third = clockMatch[3] ? Number(clockMatch[3]) : 0;
     if (clockMatch[3]) {
-      return Math.max(60, Math.min(first * 3600 + second * 60 + third, 6 * 3600));
+      return Math.max(
+        60,
+        Math.min(first * 3600 + second * 60 + third, 6 * 3600),
+      );
     }
     return Math.max(60, Math.min(first * 60 + second, 6 * 3600));
   }
 
   const unitMatch = normalized.match(
-    /(\d+)\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)?/
+    /(\d+)\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)?/,
   );
   if (!unitMatch) {
     return fallback;
@@ -935,7 +1047,7 @@ const parseDurationToSeconds = (duration: string): number => {
 
 const ensureQuizAttemptTables = async (
   db: Pool | PoolClient,
-  quizIdColumn: "quiz_id" | "id"
+  quizIdColumn: "quiz_id" | "id",
 ): Promise<void> => {
   await db.query(`
     CREATE TABLE IF NOT EXISTS quiz_attempts (
@@ -963,15 +1075,23 @@ const ensureQuizAttemptTables = async (
   `);
 
   await db.query(
-    "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_quiz_student ON quiz_attempts (quiz_id, student_id)"
+    "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_quiz_student ON quiz_attempts (quiz_id, student_id)",
   );
 
-  await db.query("ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS faculty_score NUMERIC");
-  await db.query("ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ");
-  await db.query("ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS question_order JSONB");
+  await db.query(
+    "ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS faculty_score NUMERIC",
+  );
+  await db.query(
+    "ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
+  );
+  await db.query(
+    "ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS question_order JSONB",
+  );
 };
 
-const normalizeAttemptAnswersPayload = (body: unknown): {
+const normalizeAttemptAnswersPayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: QuizAttemptAnswerInput[];
 } => {
@@ -1007,7 +1127,9 @@ const normalizeAttemptAnswersPayload = (body: unknown): {
   const normalizedAnswers: QuizAttemptAnswerInput[] = [];
   for (const candidate of answerCandidates) {
     if (!candidate || typeof candidate !== "object") {
-      return { error: "Each answer must be an object with questionId and answerText" };
+      return {
+        error: "Each answer must be an object with questionId and answerText",
+      };
     }
 
     const answer = candidate as {
@@ -1027,7 +1149,10 @@ const normalizeAttemptAnswersPayload = (body: unknown): {
           ? answer.selectedOptionText
           : null;
 
-    if (typeof answerTextCandidate !== "string" || !answerTextCandidate.trim()) {
+    if (
+      typeof answerTextCandidate !== "string" ||
+      !answerTextCandidate.trim()
+    ) {
       return { error: "answerText is required" };
     }
 
@@ -1040,11 +1165,14 @@ const normalizeAttemptAnswersPayload = (body: unknown): {
   return { payload: normalizedAnswers };
 };
 
-const normalizeFacultyScorePayload = (body: unknown): {
+const normalizeFacultyScorePayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: { score: number };
 } => {
-  const rawBody = body && typeof body === "object" ? (body as { score?: unknown }) : {};
+  const rawBody =
+    body && typeof body === "object" ? (body as { score?: unknown }) : {};
   const rawScore = rawBody.score;
   const numericScore =
     typeof rawScore === "number"
@@ -1071,7 +1199,7 @@ interface QuizQuestionMeta {
 }
 
 const extractQuestionMetaLookup = (
-  quiz: Record<string, unknown>
+  quiz: Record<string, unknown>,
 ): Map<number, QuizQuestionMeta> => {
   const questionLookup = new Map<number, QuizQuestionMeta>();
   const questions = Array.isArray(quiz.questions) ? quiz.questions : [];
@@ -1093,9 +1221,13 @@ const extractQuestionMetaLookup = (
 
     const questionType = normalizeQuestionType(question.question_type) ?? "mcq";
     const correctAnswer =
-      typeof question.correct_answer_text === "string" ? question.correct_answer_text.trim() : "";
+      typeof question.correct_answer_text === "string"
+        ? question.correct_answer_text.trim()
+        : "";
 
-    const optionValues = Array.isArray(question.options) ? question.options : [];
+    const optionValues = Array.isArray(question.options)
+      ? question.options
+      : [];
     const options = new Set<string>();
     for (const optionValue of optionValues) {
       if (!optionValue || typeof optionValue !== "object") {
@@ -1117,7 +1249,10 @@ const extractQuestionMetaLookup = (
   return questionLookup;
 };
 
-const normalizeAnswerForQuestionType = (type: QuestionType, answer: string): string => {
+const normalizeAnswerForQuestionType = (
+  type: QuestionType,
+  answer: string,
+): string => {
   if (type === "fill_blank") {
     return normalizeFreeTextForComparison(answer);
   }
@@ -1127,7 +1262,9 @@ const normalizeAnswerForQuestionType = (type: QuestionType, answer: string): str
   return answer.trim();
 };
 
-const sanitizeQuizForStudent = (quiz: Record<string, unknown>): Record<string, unknown> => {
+const sanitizeQuizForStudent = (
+  quiz: Record<string, unknown>,
+): Record<string, unknown> => {
   const questions = Array.isArray(quiz.questions) ? quiz.questions : [];
   const sanitizedQuestions = questions.map((questionValue) => {
     const question = questionValue as {
@@ -1154,7 +1291,9 @@ const sanitizeQuizForStudent = (quiz: Record<string, unknown>): Record<string, u
         })
         .filter(
           (option) =>
-            Number.isInteger(option.option_id) && option.option_id > 0 && option.option_text
+            Number.isInteger(option.option_id) &&
+            option.option_id > 0 &&
+            option.option_text,
         ),
     };
   });
@@ -1166,7 +1305,8 @@ const sanitizeQuizForStudent = (quiz: Record<string, unknown>): Record<string, u
     duration: String(quiz.duration ?? ""),
     status: String(quiz.status ?? ""),
     questions: sanitizedQuestions.filter(
-      (question) => Number.isInteger(question.question_id) && question.question_id > 0
+      (question) =>
+        Number.isInteger(question.question_id) && question.question_id > 0,
     ),
   };
 };
@@ -1208,7 +1348,7 @@ const parseQuestionOrder = (value: unknown): number[] => {
 
 const applyQuestionOrderToQuiz = (
   quiz: Record<string, unknown>,
-  questionOrder: number[]
+  questionOrder: number[],
 ): Record<string, unknown> => {
   const questions = Array.isArray(quiz.questions) ? quiz.questions : [];
   if (!questionOrder.length || !questions.length) {
@@ -1240,7 +1380,11 @@ const applyQuestionOrderToQuiz = (
   for (const questionValue of questions) {
     const question = questionValue as { question_id?: unknown };
     const questionId = Number(question.question_id);
-    if (Number.isInteger(questionId) && questionId > 0 && !seen.has(questionId)) {
+    if (
+      Number.isInteger(questionId) &&
+      questionId > 0 &&
+      !seen.has(questionId)
+    ) {
       orderedQuestions.push(questionValue as Record<string, unknown>);
       seen.add(questionId);
     }
@@ -1257,28 +1401,35 @@ const extractQuestionIds = (quiz: Record<string, unknown>): number[] => {
   return questions
     .map((questionValue) =>
       Number(
-        (questionValue as {
-          question_id?: unknown;
-        }).question_id
-      )
+        (
+          questionValue as {
+            question_id?: unknown;
+          }
+        ).question_id,
+      ),
     )
     .filter((questionId) => Number.isInteger(questionId) && questionId > 0);
 };
 
 const loadDbAttemptAnswers = async (
   db: Pool | PoolClient,
-  attemptId: number
+  attemptId: number,
 ): Promise<Record<number, string>> => {
   const result = await db.query(
     "SELECT question_id, selected_option_text FROM quiz_attempt_answers WHERE attempt_id = $1",
-    [attemptId]
+    [attemptId],
   );
 
   const answers: Record<number, string> = {};
   for (const row of result.rows) {
     const questionId = Number((row as { question_id?: unknown }).question_id);
-    const selectedOptionText = (row as { selected_option_text?: unknown }).selected_option_text;
-    if (Number.isInteger(questionId) && questionId > 0 && typeof selectedOptionText === "string") {
+    const selectedOptionText = (row as { selected_option_text?: unknown })
+      .selected_option_text;
+    if (
+      Number.isInteger(questionId) &&
+      questionId > 0 &&
+      typeof selectedOptionText === "string"
+    ) {
       answers[questionId] = selectedOptionText;
     }
   }
@@ -1289,7 +1440,7 @@ const loadDbAttemptAnswers = async (
 const loadLatestDbAttempt = async (
   db: Pool | PoolClient,
   quizId: number,
-  studentId: string
+  studentId: string,
 ): Promise<DbAttemptRow | null> => {
   const result = await db.query(
     `
@@ -1299,7 +1450,7 @@ const loadLatestDbAttempt = async (
       ORDER BY started_at DESC
       LIMIT 1
     `,
-    [quizId, studentId]
+    [quizId, studentId],
   );
 
   return (result.rows[0] as DbAttemptRow | undefined) ?? null;
@@ -1308,11 +1459,11 @@ const loadLatestDbAttempt = async (
 const loadDbAttemptById = async (
   db: Pool | PoolClient,
   quizId: number,
-  attemptId: number
+  attemptId: number,
 ): Promise<DbAttemptRow | null> => {
   const result = await db.query(
     "SELECT * FROM quiz_attempts WHERE quiz_id = $1 AND attempt_id = $2",
-    [quizId, attemptId]
+    [quizId, attemptId],
   );
 
   return (result.rows[0] as DbAttemptRow | undefined) ?? null;
@@ -1321,7 +1472,7 @@ const loadDbAttemptById = async (
 const calculateDbScore = async (
   db: Pool | PoolClient,
   quizId: number,
-  answers: Record<number, string>
+  answers: Record<number, string>,
 ): Promise<{ score: number; totalQuestions: number }> => {
   const result = await db.query(
     `
@@ -1330,21 +1481,36 @@ const calculateDbScore = async (
       WHERE q.quiz_id = $1
       ORDER BY q.question_id ASC
     `,
-    [quizId]
+    [quizId],
   );
 
   let score = 0;
   for (const row of result.rows) {
     const questionId = Number((row as { question_id?: unknown }).question_id);
-    const questionType = normalizeQuestionType((row as { question_type?: unknown }).question_type) ?? "mcq";
-    const correctAnswer = String((row as { correct_answer_text?: unknown }).correct_answer_text ?? "");
+    const questionType =
+      normalizeQuestionType(
+        (row as { question_type?: unknown }).question_type,
+      ) ?? "mcq";
+    const correctAnswer = String(
+      (row as { correct_answer_text?: unknown }).correct_answer_text ?? "",
+    );
     const selectedAnswer = answers[questionId];
-    if (!Number.isInteger(questionId) || questionId <= 0 || typeof selectedAnswer !== "string") {
+    if (
+      !Number.isInteger(questionId) ||
+      questionId <= 0 ||
+      typeof selectedAnswer !== "string"
+    ) {
       continue;
     }
 
-    const normalizedExpected = normalizeAnswerForQuestionType(questionType, correctAnswer);
-    const normalizedSelected = normalizeAnswerForQuestionType(questionType, selectedAnswer);
+    const normalizedExpected = normalizeAnswerForQuestionType(
+      questionType,
+      correctAnswer,
+    );
+    const normalizedSelected = normalizeAnswerForQuestionType(
+      questionType,
+      selectedAnswer,
+    );
     if (normalizedExpected && normalizedExpected === normalizedSelected) {
       score += 1;
     }
@@ -1356,23 +1522,32 @@ const calculateDbScore = async (
 const buildDbAttemptResponse = (
   quiz: Record<string, unknown>,
   attempt: DbAttemptRow,
-  answers: Record<number, string>
+  answers: Record<number, string>,
 ): Record<string, unknown> => {
   const expiresAtIso = toIsoString(attempt.expires_at);
-  const orderedQuiz = applyQuestionOrderToQuiz(quiz, parseQuestionOrder(attempt.question_order));
+  const orderedQuiz = applyQuestionOrderToQuiz(
+    quiz,
+    parseQuestionOrder(attempt.question_order),
+  );
   return {
     attempt_id: attempt.attempt_id,
     quiz_id: attempt.quiz_id,
     student_id: attempt.student_id,
     started_at: toIsoString(attempt.started_at),
     expires_at: expiresAtIso,
-    submitted_at: attempt.submitted_at ? toIsoString(attempt.submitted_at) : null,
+    submitted_at: attempt.submitted_at
+      ? toIsoString(attempt.submitted_at)
+      : null,
     status: attempt.submitted_at ? "Submitted" : "InProgress",
     score: attempt.score,
     faculty_score: attempt.faculty_score,
     reviewed_at: attempt.reviewed_at ? toIsoString(attempt.reviewed_at) : null,
-    total_questions: Number(attempt.total_questions ?? countQuizQuestions(quiz)),
-    remaining_seconds: attempt.submitted_at ? 0 : remainingSecondsFromIso(expiresAtIso),
+    total_questions: Number(
+      attempt.total_questions ?? countQuizQuestions(quiz),
+    ),
+    remaining_seconds: attempt.submitted_at
+      ? 0
+      : remainingSecondsFromIso(expiresAtIso),
     answers,
     quiz: sanitizeQuizForStudent(orderedQuiz),
   };
@@ -1382,13 +1557,17 @@ const finalizeDbAttempt = async (
   db: Pool | PoolClient,
   quizIdColumn: "quiz_id" | "id",
   quizId: number,
-  attempt: DbAttemptRow
+  attempt: DbAttemptRow,
 ): Promise<Record<string, unknown> | null> => {
   const answers = await loadDbAttemptAnswers(db, attempt.attempt_id);
   let finalAttempt = attempt;
 
   if (!attempt.submitted_at) {
-    const { score, totalQuestions } = await calculateDbScore(db, quizId, answers);
+    const { score, totalQuestions } = await calculateDbScore(
+      db,
+      quizId,
+      answers,
+    );
     const updateResult = await db.query(
       `
         UPDATE quiz_attempts
@@ -1399,9 +1578,10 @@ const finalizeDbAttempt = async (
         WHERE attempt_id = $3
         RETURNING *
       `,
-      [score, totalQuestions, attempt.attempt_id]
+      [score, totalQuestions, attempt.attempt_id],
     );
-    finalAttempt = (updateResult.rows[0] as DbAttemptRow | undefined) ?? attempt;
+    finalAttempt =
+      (updateResult.rows[0] as DbAttemptRow | undefined) ?? attempt;
   }
 
   const quiz = await loadQuizWithRelations(db, quizIdColumn, quizId);
@@ -1414,7 +1594,7 @@ const finalizeDbAttempt = async (
 
 const validateAttemptAnswersAgainstQuiz = (
   quiz: Record<string, unknown>,
-  answers: QuizAttemptAnswerInput[]
+  answers: QuizAttemptAnswerInput[],
 ): string | null => {
   const questionLookup = extractQuestionMetaLookup(quiz);
   for (const answer of answers) {
@@ -1440,17 +1620,20 @@ const validateAttemptAnswersAgainstQuiz = (
 
 const findLatestInMemoryAttempt = (
   quizId: number,
-  studentId: string
+  studentId: string,
 ): InMemoryQuizAttempt | null => {
   const attempts = inMemoryQuizAttempts
-    .filter((attempt) => attempt.quiz_id === quizId && attempt.student_id === studentId)
+    .filter(
+      (attempt) =>
+        attempt.quiz_id === quizId && attempt.student_id === studentId,
+    )
     .sort((a, b) => b.attempt_id - a.attempt_id);
   return attempts[0] ?? null;
 };
 
 const calculateInMemoryScore = (
   quiz: InMemoryQuiz,
-  answers: Record<number, string>
+  answers: Record<number, string>,
 ): { score: number; totalQuestions: number } => {
   let score = 0;
   for (const question of quiz.questions) {
@@ -1460,8 +1643,14 @@ const calculateInMemoryScore = (
       continue;
     }
 
-    const normalizedExpected = normalizeAnswerForQuestionType(question.question_type, correct);
-    const normalizedSelected = normalizeAnswerForQuestionType(question.question_type, selected);
+    const normalizedExpected = normalizeAnswerForQuestionType(
+      question.question_type,
+      correct,
+    );
+    const normalizedSelected = normalizeAnswerForQuestionType(
+      question.question_type,
+      selected,
+    );
     if (normalizedExpected && normalizedExpected === normalizedSelected) {
       score += 1;
     }
@@ -1471,13 +1660,16 @@ const calculateInMemoryScore = (
 
 const finalizeInMemoryAttempt = (
   quiz: InMemoryQuiz,
-  attempt: InMemoryQuizAttempt
+  attempt: InMemoryQuizAttempt,
 ): InMemoryQuizAttempt => {
   if (attempt.submitted_at) {
     return attempt;
   }
 
-  const { score, totalQuestions } = calculateInMemoryScore(quiz, attempt.answers);
+  const { score, totalQuestions } = calculateInMemoryScore(
+    quiz,
+    attempt.answers,
+  );
   attempt.status = "Submitted";
   attempt.submitted_at = new Date().toISOString();
   attempt.score = score;
@@ -1487,16 +1679,20 @@ const finalizeInMemoryAttempt = (
 
 const buildInMemoryAttemptResponse = (
   quiz: InMemoryQuiz,
-  attempt: InMemoryQuizAttempt
+  attempt: InMemoryQuizAttempt,
 ): Record<string, unknown> => {
-  const remaining = attempt.submitted_at ? 0 : remainingSecondsFromIso(attempt.expires_at);
-  const questionOrder = Array.isArray(attempt.question_order) ? attempt.question_order : [];
+  const remaining = attempt.submitted_at
+    ? 0
+    : remainingSecondsFromIso(attempt.expires_at);
+  const questionOrder = Array.isArray(attempt.question_order)
+    ? attempt.question_order
+    : [];
   const orderedQuestions = applyQuestionOrderToQuiz(
     {
       ...quiz,
       questions: quiz.questions,
     } as Record<string, unknown>,
-    questionOrder
+    questionOrder,
   );
   return {
     attempt_id: attempt.attempt_id,
@@ -1547,10 +1743,11 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
             WHERE attempt_id = $2
             RETURNING *
           `,
-          [JSON.stringify(shuffledOrder), latestAttempt.attempt_id]
+          [JSON.stringify(shuffledOrder), latestAttempt.attempt_id],
         );
         attemptForResponse =
-          (updateAttemptResult.rows[0] as DbAttemptRow | undefined) ?? latestAttempt;
+          (updateAttemptResult.rows[0] as DbAttemptRow | undefined) ??
+          latestAttempt;
       }
 
       if (
@@ -1561,7 +1758,7 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
           pool,
           quizIdColumn,
           quizId,
-          attemptForResponse
+          attemptForResponse,
         );
         if (!finalizedAttempt) {
           return res.status(404).json({ error: "Quiz not found" });
@@ -1569,16 +1766,25 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
         return res.json(finalizedAttempt);
       }
 
-      const existingAnswers = await loadDbAttemptAnswers(pool, attemptForResponse.attempt_id);
-      return res.json(buildDbAttemptResponse(quiz, attemptForResponse, existingAnswers));
+      const existingAnswers = await loadDbAttemptAnswers(
+        pool,
+        attemptForResponse.attempt_id,
+      );
+      return res.json(
+        buildDbAttemptResponse(quiz, attemptForResponse, existingAnswers),
+      );
     }
 
-    const quizStatus = String((quiz as { status?: unknown }).status ?? "").toLowerCase();
+    const quizStatus = String(
+      (quiz as { status?: unknown }).status ?? "",
+    ).toLowerCase();
     if (quizStatus === "completed") {
       return res.status(400).json({ error: "Quiz is closed." });
     }
 
-    const durationSeconds = parseDurationToSeconds(String((quiz as { duration?: unknown }).duration ?? ""));
+    const durationSeconds = parseDurationToSeconds(
+      String((quiz as { duration?: unknown }).duration ?? ""),
+    );
     const expiresAt = new Date(Date.now() + durationSeconds * 1000);
     const totalQuestions = countQuizQuestions(quiz);
     const questionOrder = shuffleNumbers(extractQuestionIds(quiz));
@@ -1588,7 +1794,13 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
         VALUES ($1, $2, $3, 'InProgress', $4, $5)
         RETURNING *
       `,
-      [quizId, studentId, expiresAt.toISOString(), totalQuestions, JSON.stringify(questionOrder)]
+      [
+        quizId,
+        studentId,
+        expiresAt.toISOString(),
+        totalQuestions,
+        JSON.stringify(questionOrder),
+      ],
     );
 
     const attempt = createResult.rows[0] as DbAttemptRow;
@@ -1602,12 +1814,18 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
 
       const latestAttempt = findLatestInMemoryAttempt(quizId, studentId);
       if (latestAttempt) {
-        if (!Array.isArray(latestAttempt.question_order) || !latestAttempt.question_order.length) {
+        if (
+          !Array.isArray(latestAttempt.question_order) ||
+          !latestAttempt.question_order.length
+        ) {
           latestAttempt.question_order = shuffleNumbers(
-            quiz.questions.map((question) => question.question_id)
+            quiz.questions.map((question) => question.question_id),
           );
         }
-        if (!latestAttempt.submitted_at && remainingSecondsFromIso(latestAttempt.expires_at) <= 0) {
+        if (
+          !latestAttempt.submitted_at &&
+          remainingSecondsFromIso(latestAttempt.expires_at) <= 0
+        ) {
           finalizeInMemoryAttempt(quiz, latestAttempt);
         }
         return res.json(buildInMemoryAttemptResponse(quiz, latestAttempt));
@@ -1619,13 +1837,17 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
 
       const durationSeconds = parseDurationToSeconds(quiz.duration);
       const now = new Date();
-      const questionOrder = shuffleNumbers(quiz.questions.map((question) => question.question_id));
+      const questionOrder = shuffleNumbers(
+        quiz.questions.map((question) => question.question_id),
+      );
       const attempt: InMemoryQuizAttempt = {
         attempt_id: inMemoryAttemptId++,
         quiz_id: quiz.quiz_id,
         student_id: studentId,
         started_at: now.toISOString(),
-        expires_at: new Date(now.getTime() + durationSeconds * 1000).toISOString(),
+        expires_at: new Date(
+          now.getTime() + durationSeconds * 1000,
+        ).toISOString(),
         submitted_at: null,
         status: "InProgress",
         score: null,
@@ -1673,11 +1895,21 @@ export const getQuizAttempt = async (req: Request, res: Response) => {
     }
 
     if (attempt.student_id !== studentId) {
-      return res.status(403).json({ error: "Forbidden: attempt belongs to another student" });
+      return res
+        .status(403)
+        .json({ error: "Forbidden: attempt belongs to another student" });
     }
 
-    if (!attempt.submitted_at && remainingSecondsFromIso(toIsoString(attempt.expires_at)) <= 0) {
-      const finalized = await finalizeDbAttempt(pool, quizIdColumn, quizId, attempt);
+    if (
+      !attempt.submitted_at &&
+      remainingSecondsFromIso(toIsoString(attempt.expires_at)) <= 0
+    ) {
+      const finalized = await finalizeDbAttempt(
+        pool,
+        quizIdColumn,
+        quizId,
+        attempt,
+      );
       if (!finalized) {
         return res.status(404).json({ error: "Quiz not found" });
       }
@@ -1694,17 +1926,22 @@ export const getQuizAttempt = async (req: Request, res: Response) => {
       }
 
       const attempt = inMemoryQuizAttempts.find(
-        (item) => item.quiz_id === quizId && item.attempt_id === attemptId
+        (item) => item.quiz_id === quizId && item.attempt_id === attemptId,
       );
       if (!attempt) {
         return res.status(404).json({ error: "Quiz attempt not found" });
       }
 
       if (attempt.student_id !== studentId) {
-        return res.status(403).json({ error: "Forbidden: attempt belongs to another student" });
+        return res
+          .status(403)
+          .json({ error: "Forbidden: attempt belongs to another student" });
       }
 
-      if (!attempt.submitted_at && remainingSecondsFromIso(attempt.expires_at) <= 0) {
+      if (
+        !attempt.submitted_at &&
+        remainingSecondsFromIso(attempt.expires_at) <= 0
+      ) {
         finalizeInMemoryAttempt(quiz, attempt);
       }
 
@@ -1730,7 +1967,9 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
   const studentId = resolveStudentId(req);
   const normalizedAnswers = normalizeAttemptAnswersPayload(req.body);
   if (normalizedAnswers.error || !normalizedAnswers.payload) {
-    return res.status(400).json({ error: normalizedAnswers.error ?? "Invalid answer payload" });
+    return res
+      .status(400)
+      .json({ error: normalizedAnswers.error ?? "Invalid answer payload" });
   }
 
   const answersToSave = normalizedAnswers.payload;
@@ -1751,11 +1990,18 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
     }
 
     if (attempt.student_id !== studentId) {
-      return res.status(403).json({ error: "Forbidden: attempt belongs to another student" });
+      return res
+        .status(403)
+        .json({ error: "Forbidden: attempt belongs to another student" });
     }
 
     if (attempt.submitted_at) {
-      const submittedAttempt = await finalizeDbAttempt(pool, quizIdColumn, quizId, attempt);
+      const submittedAttempt = await finalizeDbAttempt(
+        pool,
+        quizIdColumn,
+        quizId,
+        attempt,
+      );
       return res.status(409).json({
         error: "Quiz already submitted",
         attempt: submittedAttempt,
@@ -1763,14 +2009,22 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
     }
 
     if (remainingSecondsFromIso(toIsoString(attempt.expires_at)) <= 0) {
-      const finalizedAttempt = await finalizeDbAttempt(pool, quizIdColumn, quizId, attempt);
+      const finalizedAttempt = await finalizeDbAttempt(
+        pool,
+        quizIdColumn,
+        quizId,
+        attempt,
+      );
       return res.status(409).json({
         error: "Quiz time is over. Attempt auto-submitted.",
         attempt: finalizedAttempt,
       });
     }
 
-    const validationError = validateAttemptAnswersAgainstQuiz(quiz, answersToSave);
+    const validationError = validateAttemptAnswersAgainstQuiz(
+      quiz,
+      answersToSave,
+    );
     if (validationError) {
       return res.status(400).json({ error: validationError });
     }
@@ -1785,7 +2039,7 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
             selected_option_text = EXCLUDED.selected_option_text,
             updated_at = NOW()
         `,
-        [attemptId, answer.questionId, answer.answerText]
+        [attemptId, answer.questionId, answer.answerText],
       );
     }
 
@@ -1794,7 +2048,9 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
       attempt_id: attemptId,
       saved_count: answersToSave.length,
       saved_at: new Date().toISOString(),
-      remaining_seconds: remainingSecondsFromIso(toIsoString(attempt.expires_at)),
+      remaining_seconds: remainingSecondsFromIso(
+        toIsoString(attempt.expires_at),
+      ),
       answers: latestAnswers,
     });
   } catch (error) {
@@ -1805,14 +2061,16 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
       }
 
       const attempt = inMemoryQuizAttempts.find(
-        (item) => item.quiz_id === quizId && item.attempt_id === attemptId
+        (item) => item.quiz_id === quizId && item.attempt_id === attemptId,
       );
       if (!attempt) {
         return res.status(404).json({ error: "Quiz attempt not found" });
       }
 
       if (attempt.student_id !== studentId) {
-        return res.status(403).json({ error: "Forbidden: attempt belongs to another student" });
+        return res
+          .status(403)
+          .json({ error: "Forbidden: attempt belongs to another student" });
       }
 
       if (attempt.submitted_at) {
@@ -1835,7 +2093,7 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
           ...quiz,
           questions: quiz.questions,
         } as Record<string, unknown>),
-        answersToSave
+        answersToSave,
       );
       if (validationError) {
         return res.status(400).json({ error: validationError });
@@ -1883,10 +2141,17 @@ export const submitQuizAttempt = async (req: Request, res: Response) => {
     }
 
     if (attempt.student_id !== studentId) {
-      return res.status(403).json({ error: "Forbidden: attempt belongs to another student" });
+      return res
+        .status(403)
+        .json({ error: "Forbidden: attempt belongs to another student" });
     }
 
-    const finalizedAttempt = await finalizeDbAttempt(pool, quizIdColumn, quizId, attempt);
+    const finalizedAttempt = await finalizeDbAttempt(
+      pool,
+      quizIdColumn,
+      quizId,
+      attempt,
+    );
     if (!finalizedAttempt) {
       return res.status(404).json({ error: "Quiz not found" });
     }
@@ -1900,14 +2165,16 @@ export const submitQuizAttempt = async (req: Request, res: Response) => {
       }
 
       const attempt = inMemoryQuizAttempts.find(
-        (item) => item.quiz_id === quizId && item.attempt_id === attemptId
+        (item) => item.quiz_id === quizId && item.attempt_id === attemptId,
       );
       if (!attempt) {
         return res.status(404).json({ error: "Quiz attempt not found" });
       }
 
       if (attempt.student_id !== studentId) {
-        return res.status(403).json({ error: "Forbidden: attempt belongs to another student" });
+        return res
+          .status(403)
+          .json({ error: "Forbidden: attempt belongs to another student" });
       }
 
       finalizeInMemoryAttempt(quiz, attempt);
@@ -1953,7 +2220,10 @@ const mapDbResultRow = (row: Record<string, unknown>): ResultRow => ({
   reviewed_at: row.reviewed_at ? toIsoString(row.reviewed_at) : null,
 });
 
-const parseOptionalQuizIdFromQuery = (req: Request, res: Response): number | null | undefined => {
+const parseOptionalQuizIdFromQuery = (
+  req: Request,
+  res: Response,
+): number | null | undefined => {
   const quizIdValue = req.query.quizId;
   if (quizIdValue === undefined) {
     return undefined;
@@ -1978,6 +2248,190 @@ export const getFacultyResults = async (req: Request, res: Response) => {
   if (parsedQuizId === null) {
     return;
   }
+
+  // Return mock data for testing if no database
+  const mockResults = [
+    {
+      attempt_id: 1,
+      quiz_id: 1,
+      quiz_title: "Data Structures Quiz",
+      cls: "CSE-A",
+      student_id: "S001",
+      submitted_at: new Date().toISOString(),
+      auto_score: 8,
+      total_questions: 10,
+      faculty_score: 8,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 2,
+      quiz_id: 1,
+      quiz_title: "Data Structures Quiz",
+      cls: "CSE-A",
+      student_id: "S002",
+      submitted_at: new Date().toISOString(),
+      auto_score: 7,
+      total_questions: 10,
+      faculty_score: 7,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 3,
+      quiz_id: 1,
+      quiz_title: "Data Structures Quiz",
+      cls: "CSE-A",
+      student_id: "S003",
+      submitted_at: new Date().toISOString(),
+      auto_score: 9,
+      total_questions: 10,
+      faculty_score: 9,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 4,
+      quiz_id: 1,
+      quiz_title: "Data Structures Quiz",
+      cls: "CSE-A",
+      student_id: "S004",
+      submitted_at: new Date().toISOString(),
+      auto_score: 6,
+      total_questions: 10,
+      faculty_score: 6,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 5,
+      quiz_id: 1,
+      quiz_title: "Data Structures Quiz",
+      cls: "CSE-A",
+      student_id: "S005",
+      submitted_at: new Date().toISOString(),
+      auto_score: 10,
+      total_questions: 10,
+      faculty_score: 10,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 6,
+      quiz_id: 2,
+      quiz_title: "DBMS Test",
+      cls: "CSE-A",
+      student_id: "S001",
+      submitted_at: new Date().toISOString(),
+      auto_score: 7,
+      total_questions: 10,
+      faculty_score: 7,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 7,
+      quiz_id: 2,
+      quiz_title: "DBMS Test",
+      cls: "CSE-A",
+      student_id: "S002",
+      submitted_at: new Date().toISOString(),
+      auto_score: 8,
+      total_questions: 10,
+      faculty_score: 8,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 8,
+      quiz_id: 2,
+      quiz_title: "DBMS Test",
+      cls: "CSE-A",
+      student_id: "S003",
+      submitted_at: new Date().toISOString(),
+      auto_score: 6,
+      total_questions: 10,
+      faculty_score: 6,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 9,
+      quiz_id: 3,
+      quiz_title: "OS Assignment",
+      cls: "CSE-B",
+      student_id: "S101",
+      submitted_at: new Date().toISOString(),
+      auto_score: 85,
+      total_questions: 100,
+      faculty_score: 85,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 10,
+      quiz_id: 3,
+      quiz_title: "OS Assignment",
+      cls: "CSE-B",
+      student_id: "S102",
+      submitted_at: new Date().toISOString(),
+      auto_score: 90,
+      total_questions: 100,
+      faculty_score: 90,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 11,
+      quiz_id: 3,
+      quiz_title: "OS Assignment",
+      cls: "CSE-B",
+      student_id: "S103",
+      submitted_at: new Date().toISOString(),
+      auto_score: 75,
+      total_questions: 100,
+      faculty_score: 75,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 12,
+      quiz_id: 3,
+      quiz_title: "OS Assignment",
+      cls: "CSE-B",
+      student_id: "S104",
+      submitted_at: new Date().toISOString(),
+      auto_score: 88,
+      total_questions: 100,
+      faculty_score: 88,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 13,
+      quiz_id: 4,
+      quiz_title: "Python Quiz",
+      cls: "IT-A",
+      student_id: "S201",
+      submitted_at: new Date().toISOString(),
+      auto_score: 9,
+      total_questions: 10,
+      faculty_score: 9,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 14,
+      quiz_id: 4,
+      quiz_title: "Python Quiz",
+      cls: "IT-A",
+      student_id: "S202",
+      submitted_at: new Date().toISOString(),
+      auto_score: 8,
+      total_questions: 10,
+      faculty_score: 8,
+      reviewed_at: new Date().toISOString(),
+    },
+    {
+      attempt_id: 15,
+      quiz_id: 4,
+      quiz_title: "Python Quiz",
+      cls: "IT-A",
+      student_id: "S203",
+      submitted_at: new Date().toISOString(),
+      auto_score: 7,
+      total_questions: 10,
+      faculty_score: 7,
+      reviewed_at: new Date().toISOString(),
+    },
+  ];
 
   try {
     const quizIdColumn = await resolveQuizIdColumn(pool);
@@ -2010,37 +2464,18 @@ export const getFacultyResults = async (req: Request, res: Response) => {
         ${whereClause}
         ORDER BY qa.submitted_at DESC NULLS LAST, qa.attempt_id DESC
       `,
-      queryParams
+      queryParams,
     );
 
     return res.json(result.rows.map((row) => mapDbResultRow(row)));
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      const rows: ResultRow[] = inMemoryQuizAttempts
-        .filter((attempt) => attempt.submitted_at)
-        .filter((attempt) => (parsedQuizId === undefined ? true : attempt.quiz_id === parsedQuizId))
-        .map((attempt) => {
-          const quiz = inMemoryQuizzes.find((item) => item.quiz_id === attempt.quiz_id);
-          return {
-            attempt_id: attempt.attempt_id,
-            quiz_id: attempt.quiz_id,
-            quiz_title: quiz?.title ?? "Untitled Quiz",
-            cls: quiz?.cls ?? "",
-            student_id: attempt.student_id,
-            submitted_at: attempt.submitted_at,
-            auto_score: attempt.score,
-            total_questions: attempt.total_questions,
-            faculty_score: attempt.faculty_score,
-            reviewed_at: attempt.reviewed_at,
-          };
-        })
-        .sort((a, b) => {
-          const aTime = new Date(a.submitted_at ?? 0).getTime();
-          const bTime = new Date(b.submitted_at ?? 0).getTime();
-          return bTime - aTime;
-        });
-
-      return res.json(rows);
+      // Return mock data when database is unavailable
+      const filteredResults =
+        parsedQuizId !== undefined
+          ? mockResults.filter((r) => r.quiz_id === parsedQuizId)
+          : mockResults;
+      return res.json(filteredResults);
     }
 
     console.error("Error fetching faculty results:", error);
@@ -2056,7 +2491,9 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
 
   const normalized = normalizeFacultyScorePayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const { score } = normalized.payload;
@@ -2068,7 +2505,7 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
 
     const attemptResult = await pool.query(
       "SELECT * FROM quiz_attempts WHERE attempt_id = $1",
-      [attemptId]
+      [attemptId],
     );
     const attempt = attemptResult.rows[0] as DbAttemptRow | undefined;
     if (!attempt) {
@@ -2076,7 +2513,9 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
     }
 
     if (!attempt.submitted_at) {
-      return res.status(400).json({ error: "Cannot score an in-progress attempt" });
+      return res
+        .status(400)
+        .json({ error: "Cannot score an in-progress attempt" });
     }
 
     const totalQuestions = Number(attempt.total_questions ?? 0);
@@ -2094,15 +2533,18 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
         WHERE attempt_id = $2
         RETURNING *
       `,
-      [score, attemptId]
+      [score, attemptId],
     );
     const updatedAttempt = updateResult.rows[0] as DbAttemptRow;
 
     const quizResult = await pool.query(
       `SELECT title AS quiz_title, cls FROM quizzes WHERE ${quizIdColumn} = $1`,
-      [updatedAttempt.quiz_id]
+      [updatedAttempt.quiz_id],
     );
-    const quizRow = (quizResult.rows[0] ?? {}) as { quiz_title?: unknown; cls?: unknown };
+    const quizRow = (quizResult.rows[0] ?? {}) as {
+      quiz_title?: unknown;
+      cls?: unknown;
+    };
 
     return res.json({
       attempt_id: updatedAttempt.attempt_id,
@@ -2110,21 +2552,29 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
       quiz_title: String(quizRow.quiz_title ?? ""),
       cls: String(quizRow.cls ?? ""),
       student_id: updatedAttempt.student_id,
-      submitted_at: updatedAttempt.submitted_at ? toIsoString(updatedAttempt.submitted_at) : null,
+      submitted_at: updatedAttempt.submitted_at
+        ? toIsoString(updatedAttempt.submitted_at)
+        : null,
       auto_score: updatedAttempt.score,
       total_questions: Number(updatedAttempt.total_questions ?? 0),
       faculty_score: toNullableNumber(updatedAttempt.faculty_score),
-      reviewed_at: updatedAttempt.reviewed_at ? toIsoString(updatedAttempt.reviewed_at) : null,
+      reviewed_at: updatedAttempt.reviewed_at
+        ? toIsoString(updatedAttempt.reviewed_at)
+        : null,
     } as ResultRow);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      const attempt = inMemoryQuizAttempts.find((item) => item.attempt_id === attemptId);
+      const attempt = inMemoryQuizAttempts.find(
+        (item) => item.attempt_id === attemptId,
+      );
       if (!attempt) {
         return res.status(404).json({ error: "Quiz attempt not found" });
       }
 
       if (!attempt.submitted_at) {
-        return res.status(400).json({ error: "Cannot score an in-progress attempt" });
+        return res
+          .status(400)
+          .json({ error: "Cannot score an in-progress attempt" });
       }
 
       if (attempt.total_questions > 0 && score > attempt.total_questions) {
@@ -2136,7 +2586,9 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
       attempt.faculty_score = score;
       attempt.reviewed_at = new Date().toISOString();
 
-      const quiz = inMemoryQuizzes.find((item) => item.quiz_id === attempt.quiz_id);
+      const quiz = inMemoryQuizzes.find(
+        (item) => item.quiz_id === attempt.quiz_id,
+      );
       return res.json({
         attempt_id: attempt.attempt_id,
         quiz_id: attempt.quiz_id,
@@ -2184,7 +2636,7 @@ export const getStudentResults = async (req: Request, res: Response) => {
           AND qa.submitted_at IS NOT NULL
         ORDER BY qa.submitted_at DESC NULLS LAST, qa.attempt_id DESC
       `,
-      [studentId]
+      [studentId],
     );
 
     return res.json(result.rows.map((row) => mapDbResultRow(row)));
@@ -2194,7 +2646,9 @@ export const getStudentResults = async (req: Request, res: Response) => {
         .filter((attempt) => attempt.student_id === studentId)
         .filter((attempt) => attempt.submitted_at)
         .map((attempt) => {
-          const quiz = inMemoryQuizzes.find((item) => item.quiz_id === attempt.quiz_id);
+          const quiz = inMemoryQuizzes.find(
+            (item) => item.quiz_id === attempt.quiz_id,
+          );
           return {
             attempt_id: attempt.attempt_id,
             quiz_id: attempt.quiz_id,

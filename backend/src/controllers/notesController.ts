@@ -12,6 +12,7 @@ interface NormalizedNotePayload {
   subject: string;
   title: string;
   content: string;
+  chapter: string;
   fileUrl: string;
 }
 
@@ -21,6 +22,7 @@ interface InMemoryNote {
   subject: string;
   title: string;
   content: string;
+  chapter: string;
   file_url: string;
   created_at: string;
   updated_at: string;
@@ -58,6 +60,7 @@ const sampleNote: NormalizedNotePayload = {
   title: "Trees - Quick Revision Notes",
   content:
     "Covers binary tree traversals, BST insertion/deletion, and time complexity summary for common operations.",
+  chapter: "Trees",
   fileUrl:
     "https://www.cs.cornell.edu/courses/cs3110/2014sp/lectures/21/binary-trees.html",
 };
@@ -127,12 +130,15 @@ const mapNoteRow = (row: Record<string, unknown>): Record<string, unknown> => ({
   subject: String(row.subject ?? ""),
   title: String(row.title ?? ""),
   content: String(row.content ?? ""),
+  chapter: String(row.chapter ?? ""),
   file_url: String(row.file_url ?? ""),
   created_at: row.created_at ? toIsoString(row.created_at) : null,
   updated_at: row.updated_at ? toIsoString(row.updated_at) : null,
 });
 
-const normalizeNotePayload = (body: unknown): {
+const normalizeNotePayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: NormalizedNotePayload;
 } => {
@@ -143,15 +149,19 @@ const normalizeNotePayload = (body: unknown): {
           subject?: unknown;
           title?: unknown;
           content?: unknown;
+          chapter?: unknown;
           fileUrl?: unknown;
           file_url?: unknown;
         })
       : {};
 
   const cls = typeof rawBody.cls === "string" ? rawBody.cls.trim() : "";
-  const subject = typeof rawBody.subject === "string" ? rawBody.subject.trim() : "";
+  const subject =
+    typeof rawBody.subject === "string" ? rawBody.subject.trim() : "";
   const title = typeof rawBody.title === "string" ? rawBody.title.trim() : "";
-  const content = typeof rawBody.content === "string" ? rawBody.content.trim() : "";
+  const content =
+    typeof rawBody.content === "string" ? rawBody.content.trim() : "";
+  const chapter = typeof rawBody.chapter === "string" ? rawBody.chapter.trim() : "";
   const fileUrlRaw =
     typeof rawBody.fileUrl === "string"
       ? rawBody.fileUrl
@@ -182,12 +192,15 @@ const normalizeNotePayload = (body: unknown): {
       subject,
       title,
       content,
+      chapter,
       fileUrl,
     },
   };
 };
 
-const normalizeNoteUploadPayload = (body: unknown): {
+const normalizeNoteUploadPayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: NormalizedNoteFileUploadPayload;
 } => {
@@ -201,8 +214,10 @@ const normalizeNoteUploadPayload = (body: unknown): {
         })
       : {};
 
-  const fileName = typeof rawBody.fileName === "string" ? rawBody.fileName.trim() : "";
-  const mimeType = typeof rawBody.mimeType === "string" ? rawBody.mimeType.trim() : "";
+  const fileName =
+    typeof rawBody.fileName === "string" ? rawBody.fileName.trim() : "";
+  const mimeType =
+    typeof rawBody.mimeType === "string" ? rawBody.mimeType.trim() : "";
   const base64Raw =
     typeof rawBody.fileBase64 === "string"
       ? rawBody.fileBase64
@@ -231,11 +246,14 @@ const normalizeNoteUploadPayload = (body: unknown): {
   };
 };
 
-const sanitizeUploadedFileName = (originalName: string): {
+const sanitizeUploadedFileName = (
+  originalName: string,
+): {
   safeBaseName: string;
   extension: string;
 } => {
-  const normalizedOriginal = originalName.replace(/[/\\]+/g, " ").trim() || "note-file";
+  const normalizedOriginal =
+    originalName.replace(/[/\\]+/g, " ").trim() || "note-file";
   const parsed = path.parse(normalizedOriginal);
   const extension = parsed.ext.replace(".", "").toLowerCase();
   const baseNameSource = parsed.name || "note-file";
@@ -271,14 +289,20 @@ const ensureNotesTable = async (db: Pool | PoolClient): Promise<void> => {
       subject VARCHAR(255) NOT NULL,
       title VARCHAR(255) NOT NULL,
       content TEXT NOT NULL DEFAULT '',
+      chapter VARCHAR(255) NOT NULL DEFAULT '',
       file_url TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 
-  await db.query("CREATE INDEX IF NOT EXISTS idx_notes_subject ON notes (subject)");
+  await db.query(
+    "CREATE INDEX IF NOT EXISTS idx_notes_subject ON notes (subject)",
+  );
   await db.query("CREATE INDEX IF NOT EXISTS idx_notes_cls ON notes (cls)");
+  await db.query(
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS chapter VARCHAR(255) NOT NULL DEFAULT ''",
+  );
 };
 
 const createSampleNoteInDb = async (db: Pool | PoolClient): Promise<void> => {
@@ -298,7 +322,7 @@ const createSampleNoteInDb = async (db: Pool | PoolClient): Promise<void> => {
       sampleNote.title,
       sampleNote.content,
       sampleNote.fileUrl,
-    ]
+    ],
   );
 };
 
@@ -314,6 +338,7 @@ const ensureSampleNoteInMemory = (): void => {
     subject: sampleNote.subject,
     title: sampleNote.title,
     content: sampleNote.content,
+    chapter: "",
     file_url: sampleNote.fileUrl,
     created_at: now,
     updated_at: now,
@@ -321,7 +346,8 @@ const ensureSampleNoteInMemory = (): void => {
 };
 
 export const getNotes = async (req: Request, res: Response) => {
-  const clsQuery = typeof req.query.cls === "string" ? req.query.cls.trim() : "";
+  const clsQuery =
+    typeof req.query.cls === "string" ? req.query.cls.trim() : "";
   const subjectQuery =
     typeof req.query.subject === "string" ? req.query.subject.trim() : "";
 
@@ -341,7 +367,9 @@ export const getNotes = async (req: Request, res: Response) => {
       whereParts.push(`subject = $${values.length}`);
     }
 
-    const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+    const whereClause = whereParts.length
+      ? `WHERE ${whereParts.join(" AND ")}`
+      : "";
     const result = await pool.query(
       `
         SELECT *
@@ -349,7 +377,7 @@ export const getNotes = async (req: Request, res: Response) => {
         ${whereClause}
         ORDER BY created_at DESC, note_id DESC
       `,
-      values
+      values,
     );
 
     return res.json(result.rows.map((row) => mapNoteRow(row)));
@@ -361,8 +389,8 @@ export const getNotes = async (req: Request, res: Response) => {
         .filter((note) => (subjectQuery ? note.subject === subjectQuery : true))
         .sort(
           (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime() ||
-            b.note_id - a.note_id
+            new Date(b.created_at).getTime() -
+              new Date(a.created_at).getTime() || b.note_id - a.note_id,
         );
       return res.json(rows);
     }
@@ -382,11 +410,15 @@ export const uploadNoteFile = async (req: Request, res: Response) => {
 
   const normalized = normalizeNoteUploadPayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const payload = normalized.payload;
-  const { safeBaseName, extension } = sanitizeUploadedFileName(payload.fileName);
+  const { safeBaseName, extension } = sanitizeUploadedFileName(
+    payload.fileName,
+  );
 
   if (extension && !allowedUploadExtensions.has(extension)) {
     return res.status(400).json({
@@ -409,7 +441,9 @@ export const uploadNoteFile = async (req: Request, res: Response) => {
   if (buffer.length > MAX_NOTE_UPLOAD_BYTES) {
     return res
       .status(400)
-      .json({ error: `File is too large. Maximum allowed size is ${MAX_NOTE_UPLOAD_BYTES / (1024 * 1024)} MB` });
+      .json({
+        error: `File is too large. Maximum allowed size is ${MAX_NOTE_UPLOAD_BYTES / (1024 * 1024)} MB`,
+      });
   }
 
   const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -421,7 +455,7 @@ export const uploadNoteFile = async (req: Request, res: Response) => {
     const supabaseUpload = await uploadBufferToSupabaseStorage(
       buffer,
       storedFileName,
-      payload.mimeType || "application/octet-stream"
+      payload.mimeType || "application/octet-stream",
     );
 
     if (!supabaseUpload) {
@@ -439,14 +473,18 @@ export const uploadNoteFile = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("Error uploading note file to Supabase Storage:", error);
-    return res.status(502).json({ error: "Failed to upload file to Supabase Storage" });
+    return res
+      .status(502)
+      .json({ error: "Failed to upload file to Supabase Storage" });
   }
 };
 
 export const createNote = async (req: Request, res: Response) => {
   const normalized = normalizeNotePayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const payload = normalized.payload;
@@ -455,11 +493,18 @@ export const createNote = async (req: Request, res: Response) => {
     await ensureNotesTable(pool);
     const result = await pool.query(
       `
-        INSERT INTO notes (cls, subject, title, content, file_url)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO notes (cls, subject, title, content, chapter, file_url)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *
       `,
-      [payload.cls, payload.subject, payload.title, payload.content, payload.fileUrl]
+      [
+        payload.cls,
+        payload.subject,
+        payload.title,
+        payload.content,
+        payload.chapter,
+        payload.fileUrl,
+      ],
     );
 
     return res.status(201).json(mapNoteRow(result.rows[0]));
@@ -472,6 +517,7 @@ export const createNote = async (req: Request, res: Response) => {
         subject: payload.subject,
         title: payload.title,
         content: payload.content,
+        chapter: payload.chapter,
         file_url: payload.fileUrl,
         created_at: now,
         updated_at: now,
@@ -493,7 +539,9 @@ export const updateNote = async (req: Request, res: Response) => {
 
   const normalized = normalizeNotePayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const payload = normalized.payload;
@@ -507,9 +555,10 @@ export const updateNote = async (req: Request, res: Response) => {
             subject = $2,
             title = $3,
             content = $4,
-            file_url = $5,
+            chapter = $5,
+            file_url = $6,
             updated_at = NOW()
-        WHERE note_id = $6
+        WHERE note_id = $7
         RETURNING *
       `,
       [
@@ -517,9 +566,10 @@ export const updateNote = async (req: Request, res: Response) => {
         payload.subject,
         payload.title,
         payload.content,
+        payload.chapter,
         payload.fileUrl,
         noteId,
-      ]
+      ],
     );
 
     if (!(result.rowCount ?? 0)) {
@@ -538,6 +588,7 @@ export const updateNote = async (req: Request, res: Response) => {
       note.subject = payload.subject;
       note.title = payload.title;
       note.content = payload.content;
+      note.chapter = payload.chapter;
       note.file_url = payload.fileUrl;
       note.updated_at = new Date().toISOString();
       return res.json(note);
@@ -556,7 +607,9 @@ export const deleteNote = async (req: Request, res: Response) => {
 
   try {
     await ensureNotesTable(pool);
-    const result = await pool.query("DELETE FROM notes WHERE note_id = $1", [noteId]);
+    const result = await pool.query("DELETE FROM notes WHERE note_id = $1", [
+      noteId,
+    ]);
     if (!(result.rowCount ?? 0)) {
       return res.status(404).json({ error: "Note not found" });
     }

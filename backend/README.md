@@ -1,5 +1,32 @@
 # EduHub Backend Auth Notes
 
+## Deployment
+
+Deploy the backend separately from the frontend.
+
+- Backend host: Render / Railway / VPS / Docker host
+- Frontend host: Vercel
+- Frontend URL should be set in `FRONTEND_BASE_URL`
+
+### Render
+
+This repo now includes a root `render.yaml` that deploys the backend from `backend/`.
+
+Important backend env vars:
+
+- `DATABASE_URL`
+- `DB_SSL`
+- `JWT_SECRET`
+- `FRONTEND_BASE_URL`
+- `CORS_ALLOWED_ORIGINS`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_STORAGE_BUCKET`
+- `EMAIL_PROVIDER`
+- `EMAIL_FROM`
+
+Use `backend/.env.example` as the reference list.
+
 ## Email Delivery Modes
 
 The auth service supports 3 email modes via environment variables:

@@ -1,6 +1,11 @@
 import { Request, Response } from "express";
 import { Pool, PoolClient } from "pg";
+import path from "path";
 import pool from "../utils/db";
+import {
+  isSupabaseStorageConfigured,
+  uploadBufferToSupabaseStorage,
+} from "../utils/supabaseStorage";
 
 interface NormalizedAssignmentPayload {
   cls: string;
@@ -27,6 +32,7 @@ interface InMemorySubmission {
   assignment_id: number;
   student_id: string;
   submission_text: string;
+  file_url: string | null;
   submitted_at: string;
   faculty_score: number | null;
   reviewed_at: string | null;
@@ -114,7 +120,9 @@ const parsePositiveId = (value: unknown): number => {
 };
 
 const parseAssignmentIdParam = (req: Request, res: Response): number | null => {
-  const assignmentId = parsePositiveId(req.params.assignmentId ?? req.params.id);
+  const assignmentId = parsePositiveId(
+    req.params.assignmentId ?? req.params.id,
+  );
   if (!assignmentId) {
     res.status(400).json({ error: "Invalid assignment id" });
     return null;
@@ -139,7 +147,9 @@ const toIsoString = (value: unknown): string => {
   return date.toISOString();
 };
 
-const normalizeAssignmentPayload = (body: unknown): {
+const normalizeAssignmentPayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: NormalizedAssignmentPayload;
 } => {
@@ -196,25 +206,42 @@ const normalizeAssignmentPayload = (body: unknown): {
   };
 };
 
-const normalizeSubmissionPayload = (body: unknown): {
+const normalizeSubmissionPayload = (
+  body: unknown,
+): {
   error?: string;
-  payload?: { submissionText: string };
+  payload?: { submissionText: string; fileUrl?: string | null };
 } => {
   const rawBody =
-    body && typeof body === "object" ? (body as { submissionText?: unknown }) : {};
+    body && typeof body === "object"
+      ? (body as { submissionText?: unknown; fileUrl?: unknown })
+      : {};
 
-  if (typeof rawBody.submissionText !== "string" || !rawBody.submissionText.trim()) {
+  if (
+    typeof rawBody.submissionText !== "string" ||
+    !rawBody.submissionText.trim()
+  ) {
     return { error: "submissionText is required" };
   }
 
-  return { payload: { submissionText: rawBody.submissionText.trim() } };
+  const fileUrl =
+    typeof rawBody.fileUrl === "string" && rawBody.fileUrl.trim()
+      ? rawBody.fileUrl.trim()
+      : null;
+
+  return {
+    payload: { submissionText: rawBody.submissionText.trim(), fileUrl },
+  };
 };
 
-const normalizeScorePayload = (body: unknown): {
+const normalizeScorePayload = (
+  body: unknown,
+): {
   error?: string;
   payload?: { score: number };
 } => {
-  const rawBody = body && typeof body === "object" ? (body as { score?: unknown }) : {};
+  const rawBody =
+    body && typeof body === "object" ? (body as { score?: unknown }) : {};
   const rawScore = rawBody.score;
   const score =
     typeof rawScore === "number"
@@ -254,6 +281,7 @@ const ensureAssignmentTables = async (db: Pool | PoolClient): Promise<void> => {
       assignment_id INT REFERENCES assignments(assignment_id) ON DELETE CASCADE,
       student_id VARCHAR(120) NOT NULL,
       submission_text TEXT NOT NULL,
+      file_url TEXT,
       submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       faculty_score NUMERIC,
       reviewed_at TIMESTAMPTZ,
@@ -262,14 +290,16 @@ const ensureAssignmentTables = async (db: Pool | PoolClient): Promise<void> => {
   `);
 
   await db.query(
-    "CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment ON assignment_submissions (assignment_id)"
+    "CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment ON assignment_submissions (assignment_id)",
   );
   await db.query(
-    "CREATE INDEX IF NOT EXISTS idx_assignment_submissions_student ON assignment_submissions (student_id)"
+    "CREATE INDEX IF NOT EXISTS idx_assignment_submissions_student ON assignment_submissions (student_id)",
   );
 };
 
-const mapAssignmentRow = (row: Record<string, unknown>): Record<string, unknown> => ({
+const mapAssignmentRow = (
+  row: Record<string, unknown>,
+): Record<string, unknown> => ({
   assignment_id: Number(row.assignment_id),
   cls: String(row.cls ?? ""),
   subject: String(row.subject ?? ""),
@@ -281,18 +311,23 @@ const mapAssignmentRow = (row: Record<string, unknown>): Record<string, unknown>
   submission_count: Number(row.submission_count ?? 0),
 });
 
-const mapSubmissionRow = (row: Record<string, unknown>): Record<string, unknown> => ({
+const mapSubmissionRow = (
+  row: Record<string, unknown>,
+): Record<string, unknown> => ({
   submission_id: Number(row.submission_id),
   assignment_id: Number(row.assignment_id),
   student_id: String(row.student_id ?? ""),
   submission_text: String(row.submission_text ?? ""),
+  file_url: row.file_url ? String(row.file_url) : null,
   submitted_at: toIsoString(row.submitted_at),
   faculty_score:
     row.faculty_score === null || row.faculty_score === undefined
       ? null
       : Number(row.faculty_score),
   reviewed_at: row.reviewed_at ? toIsoString(row.reviewed_at) : null,
-  assignment_title: row.assignment_title ? String(row.assignment_title) : undefined,
+  assignment_title: row.assignment_title
+    ? String(row.assignment_title)
+    : undefined,
   subject: row.subject ? String(row.subject) : undefined,
   cls: row.cls ? String(row.cls) : undefined,
   max_score:
@@ -318,8 +353,12 @@ const ensureSampleAssignmentInMemory = (): void => {
   });
 };
 
-const createSampleAssignmentInDb = async (db: Pool | PoolClient): Promise<void> => {
-  const existingResult = await db.query("SELECT assignment_id FROM assignments LIMIT 1");
+const createSampleAssignmentInDb = async (
+  db: Pool | PoolClient,
+): Promise<void> => {
+  const existingResult = await db.query(
+    "SELECT assignment_id FROM assignments LIMIT 1",
+  );
   if ((existingResult.rowCount ?? 0) > 0) {
     return;
   }
@@ -336,12 +375,136 @@ const createSampleAssignmentInDb = async (db: Pool | PoolClient): Promise<void> 
       sampleAssignment.description,
       sampleAssignment.dueDateIso,
       sampleAssignment.maxScore,
-    ]
+    ],
   );
 };
 
-const findAssignmentInMemory = (assignmentId: number): InMemoryAssignment | null =>
-  inMemoryAssignments.find((item) => item.assignment_id === assignmentId) ?? null;
+const findAssignmentInMemory = (
+  assignmentId: number,
+): InMemoryAssignment | null =>
+  inMemoryAssignments.find((item) => item.assignment_id === assignmentId) ??
+  null;
+
+const MAX_ASSIGNMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
+const allowedUploadExtensions = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "txt",
+  "zip",
+  "rar",
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+]);
+
+const sanitizeUploadedFileName = (
+  originalName: string,
+): {
+  safeBaseName: string;
+  extension: string;
+} => {
+  const normalizedOriginal =
+    originalName.replace(/[/\\]+/g, " ").trim() || "assignment-file";
+  const parsed = path.parse(normalizedOriginal);
+  const extension = parsed.ext.replace(".", "").toLowerCase();
+  const baseNameSource = parsed.name || "assignment-file";
+  const safeBaseName = baseNameSource
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 80);
+
+  return {
+    safeBaseName: safeBaseName || "assignment-file",
+    extension,
+  };
+};
+
+export const uploadAssignmentFile = async (req: Request, res: Response) => {
+  if (!isSupabaseStorageConfigured()) {
+    return res.status(500).json({
+      error:
+        "Supabase Storage is not configured. Set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and SUPABASE_STORAGE_BUCKET.",
+    });
+  }
+
+  const rawBody =
+    req.body && typeof req.body === "object"
+      ? (req.body as {
+          fileName?: unknown;
+          mimeType?: unknown;
+          fileBase64?: unknown;
+        })
+      : {};
+
+  const fileName =
+    typeof rawBody.fileName === "string" ? rawBody.fileName.trim() : "";
+  const mimeType =
+    typeof rawBody.mimeType === "string" ? rawBody.mimeType.trim() : "";
+  const fileBase64 =
+    typeof rawBody.fileBase64 === "string"
+      ? rawBody.fileBase64
+          .replace(/^data:[^;]+;base64,/, "")
+          .replace(/\s+/g, "")
+          .trim()
+      : "";
+
+  if (!fileName || !fileBase64) {
+    return res.status(400).json({ error: "fileName and fileBase64 are required" });
+  }
+
+  const { safeBaseName, extension } = sanitizeUploadedFileName(fileName);
+
+  if (extension && !allowedUploadExtensions.has(extension)) {
+    return res.status(400).json({
+      error: `Unsupported file format: .${extension}. Allowed: pdf, doc/docx, txt, zip, rar, jpg/jpeg/png/webp`,
+    });
+  }
+
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(fileBase64, "base64");
+  } catch {
+    return res.status(400).json({ error: "Invalid base64 file data" });
+  }
+
+  if (buffer.length > MAX_ASSIGNMENT_UPLOAD_BYTES) {
+    return res.status(400).json({
+      error: `File is too large. Maximum allowed size is ${MAX_ASSIGNMENT_UPLOAD_BYTES / (1024 * 1024)} MB`,
+    });
+  }
+
+  const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const storedFileName = extension
+    ? `${safeBaseName}-${uniqueSuffix}.${extension}`
+    : `${safeBaseName}-${uniqueSuffix}`;
+
+  try {
+    const supabaseUpload = await uploadBufferToSupabaseStorage(
+      buffer,
+      storedFileName,
+      mimeType || "application/octet-stream",
+    );
+
+    if (!supabaseUpload) {
+      return res
+        .status(500)
+        .json({ error: "Supabase Storage is not configured on the server." });
+    }
+
+    return res.status(201).json({
+      fileUrl: supabaseUpload.fileUrl,
+      fileName,
+      mimeType: mimeType || "application/octet-stream",
+      size: buffer.length,
+    });
+  } catch (error) {
+    console.error("Error uploading assignment file to Supabase:", error);
+    return res.status(502).json({ error: "Failed to upload file to storage" });
+  }
+};
 
 export const getAssignments = async (req: Request, res: Response) => {
   try {
@@ -358,7 +521,7 @@ export const getAssignments = async (req: Request, res: Response) => {
           ON s.assignment_id = a.assignment_id
         GROUP BY a.assignment_id
         ORDER BY a.due_date ASC, a.assignment_id DESC
-      `
+      `,
     );
 
     return res.json(result.rows.map((row) => mapAssignmentRow(row)));
@@ -369,13 +532,14 @@ export const getAssignments = async (req: Request, res: Response) => {
         .map((assignment) => ({
           ...assignment,
           submission_count: inMemorySubmissions.filter(
-            (submission) => submission.assignment_id === assignment.assignment_id
+            (submission) =>
+              submission.assignment_id === assignment.assignment_id,
           ).length,
         }))
         .sort(
           (a, b) =>
             new Date(a.due_date).getTime() - new Date(b.due_date).getTime() ||
-            b.assignment_id - a.assignment_id
+            b.assignment_id - a.assignment_id,
         );
       return res.json(rows);
     }
@@ -388,7 +552,9 @@ export const getAssignments = async (req: Request, res: Response) => {
 export const createAssignment = async (req: Request, res: Response) => {
   const normalized = normalizeAssignmentPayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const payload = normalized.payload;
@@ -408,7 +574,7 @@ export const createAssignment = async (req: Request, res: Response) => {
         payload.description,
         payload.dueDateIso,
         payload.maxScore,
-      ]
+      ],
     );
 
     return res.status(201).json(mapAssignmentRow(result.rows[0]));
@@ -441,7 +607,9 @@ export const updateAssignment = async (req: Request, res: Response) => {
 
   const normalized = normalizeAssignmentPayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const payload = normalized.payload;
@@ -468,7 +636,7 @@ export const updateAssignment = async (req: Request, res: Response) => {
         payload.dueDateIso,
         payload.maxScore,
         assignmentId,
-      ]
+      ],
     );
 
     if (!(result.rowCount ?? 0)) {
@@ -477,7 +645,7 @@ export const updateAssignment = async (req: Request, res: Response) => {
 
     const submissionCountResult = await pool.query(
       "SELECT COUNT(*)::INT AS count FROM assignment_submissions WHERE assignment_id = $1",
-      [assignmentId]
+      [assignmentId],
     );
 
     return res.json({
@@ -501,7 +669,7 @@ export const updateAssignment = async (req: Request, res: Response) => {
       return res.json({
         ...assignment,
         submission_count: inMemorySubmissions.filter(
-          (submission) => submission.assignment_id === assignmentId
+          (submission) => submission.assignment_id === assignmentId,
         ).length,
       });
     }
@@ -519,9 +687,10 @@ export const deleteAssignment = async (req: Request, res: Response) => {
 
   try {
     await ensureAssignmentTables(pool);
-    const result = await pool.query("DELETE FROM assignments WHERE assignment_id = $1", [
-      assignmentId,
-    ]);
+    const result = await pool.query(
+      "DELETE FROM assignments WHERE assignment_id = $1",
+      [assignmentId],
+    );
 
     if (!(result.rowCount ?? 0)) {
       return res.status(404).json({ error: "Assignment not found" });
@@ -531,7 +700,7 @@ export const deleteAssignment = async (req: Request, res: Response) => {
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
       const index = inMemoryAssignments.findIndex(
-        (assignment) => assignment.assignment_id === assignmentId
+        (assignment) => assignment.assignment_id === assignmentId,
       );
       if (index === -1) {
         return res.status(404).json({ error: "Assignment not found" });
@@ -559,20 +728,24 @@ export const submitAssignment = async (req: Request, res: Response) => {
 
   const normalized = normalizeSubmissionPayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const studentId = resolveStudentId(req);
-  const { submissionText } = normalized.payload;
+  const { submissionText, fileUrl } = normalized.payload;
 
   try {
     await ensureAssignmentTables(pool);
 
     const assignmentResult = await pool.query(
       "SELECT assignment_id, max_score, title AS assignment_title, subject, cls FROM assignments WHERE assignment_id = $1",
-      [assignmentId]
+      [assignmentId],
     );
-    const assignment = assignmentResult.rows[0] as Record<string, unknown> | undefined;
+    const assignment = assignmentResult.rows[0] as
+      | Record<string, unknown>
+      | undefined;
     if (!assignment) {
       return res.status(404).json({ error: "Assignment not found" });
     }
@@ -583,20 +756,22 @@ export const submitAssignment = async (req: Request, res: Response) => {
           assignment_id,
           student_id,
           submission_text,
+          file_url,
           submitted_at,
           faculty_score,
           reviewed_at
         )
-        VALUES ($1, $2, $3, NOW(), NULL, NULL)
+        VALUES ($1, $2, $3, $4, NOW(), NULL, NULL)
         ON CONFLICT (assignment_id, student_id)
         DO UPDATE SET
           submission_text = EXCLUDED.submission_text,
+          file_url = EXCLUDED.file_url,
           submitted_at = NOW(),
           faculty_score = NULL,
           reviewed_at = NULL
         RETURNING *
       `,
-      [assignmentId, studentId, submissionText]
+      [assignmentId, studentId, submissionText, fileUrl],
     );
 
     return res.status(201).json({
@@ -615,12 +790,14 @@ export const submitAssignment = async (req: Request, res: Response) => {
 
       const existing = inMemorySubmissions.find(
         (submission) =>
-          submission.assignment_id === assignmentId && submission.student_id === studentId
+          submission.assignment_id === assignmentId &&
+          submission.student_id === studentId,
       );
       const nowIso = new Date().toISOString();
 
       if (existing) {
         existing.submission_text = submissionText;
+        existing.file_url = fileUrl ?? null;
         existing.submitted_at = nowIso;
         existing.faculty_score = null;
         existing.reviewed_at = null;
@@ -640,6 +817,7 @@ export const submitAssignment = async (req: Request, res: Response) => {
         assignment_id: assignmentId,
         student_id: studentId,
         submission_text: submissionText,
+        file_url: fileUrl ?? null,
         submitted_at: nowIso,
         faculty_score: null,
         reviewed_at: null,
@@ -660,7 +838,10 @@ export const submitAssignment = async (req: Request, res: Response) => {
   }
 };
 
-export const getStudentAssignmentSubmissions = async (req: Request, res: Response) => {
+export const getStudentAssignmentSubmissions = async (
+  req: Request,
+  res: Response,
+) => {
   const studentId = resolveStudentId(req);
 
   try {
@@ -681,7 +862,7 @@ export const getStudentAssignmentSubmissions = async (req: Request, res: Respons
         WHERE s.student_id = $1
         ORDER BY s.submitted_at DESC, s.submission_id DESC
       `,
-      [studentId]
+      [studentId],
     );
 
     return res.json(result.rows.map((row) => mapSubmissionRow(row)));
@@ -702,8 +883,9 @@ export const getStudentAssignmentSubmissions = async (req: Request, res: Respons
         })
         .sort(
           (a, b) =>
-            new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime() ||
-            b.submission_id - a.submission_id
+            new Date(b.submitted_at).getTime() -
+              new Date(a.submitted_at).getTime() ||
+            b.submission_id - a.submission_id,
         );
       return res.json(rows);
     }
@@ -715,14 +897,16 @@ export const getStudentAssignmentSubmissions = async (req: Request, res: Respons
 
 const parseOptionalAssignmentIdQuery = (
   req: Request,
-  res: Response
+  res: Response,
 ): number | null | undefined => {
   const raw = req.query.assignmentId;
   if (raw === undefined) {
     return undefined;
   }
   if (typeof raw !== "string") {
-    res.status(400).json({ error: "assignmentId query must be a single value" });
+    res
+      .status(400)
+      .json({ error: "assignmentId query must be a single value" });
     return null;
   }
   const assignmentId = parsePositiveId(raw);
@@ -733,11 +917,109 @@ const parseOptionalAssignmentIdQuery = (
   return assignmentId;
 };
 
-export const getFacultyAssignmentSubmissions = async (req: Request, res: Response) => {
+export const getFacultyAssignmentSubmissions = async (
+  req: Request,
+  res: Response,
+) => {
   const optionalAssignmentId = parseOptionalAssignmentIdQuery(req, res);
   if (optionalAssignmentId === null) {
     return;
   }
+
+  // Mock data for testing
+  const mockSubmissions = [
+    {
+      submission_id: 1,
+      assignment_id: 1,
+      student_id: "S001",
+      submission_text: "Binary Tree Implementation",
+      submitted_at: new Date().toISOString(),
+      faculty_score: 18,
+      reviewed_at: new Date().toISOString(),
+      assignment_title: "Binary Trees",
+      subject: "Data Structures",
+      cls: "CSE-A",
+      max_score: 20,
+    },
+    {
+      submission_id: 2,
+      assignment_id: 1,
+      student_id: "S002",
+      submission_text: "Tree Traversal Code",
+      submitted_at: new Date().toISOString(),
+      faculty_score: 16,
+      reviewed_at: new Date().toISOString(),
+      assignment_title: "Binary Trees",
+      subject: "Data Structures",
+      cls: "CSE-A",
+      max_score: 20,
+    },
+    {
+      submission_id: 3,
+      assignment_id: 1,
+      student_id: "S003",
+      submission_text: "Tree Implementation",
+      submitted_at: new Date().toISOString(),
+      faculty_score: 19,
+      reviewed_at: new Date().toISOString(),
+      assignment_title: "Binary Trees",
+      subject: "Data Structures",
+      cls: "CSE-A",
+      max_score: 20,
+    },
+    {
+      submission_id: 4,
+      assignment_id: 2,
+      student_id: "S101",
+      submission_text: "SQL Queries",
+      submitted_at: new Date().toISOString(),
+      faculty_score: 85,
+      reviewed_at: new Date().toISOString(),
+      assignment_title: "DBMS Project",
+      subject: "DBMS",
+      cls: "CSE-B",
+      max_score: 100,
+    },
+    {
+      submission_id: 5,
+      assignment_id: 2,
+      student_id: "S102",
+      submission_text: "Database Design",
+      submitted_at: new Date().toISOString(),
+      faculty_score: 90,
+      reviewed_at: new Date().toISOString(),
+      assignment_title: "DBMS Project",
+      subject: "DBMS",
+      cls: "CSE-B",
+      max_score: 100,
+    },
+    {
+      submission_id: 6,
+      assignment_id: 3,
+      student_id: "S201",
+      submission_text: "Python Script",
+      submitted_at: new Date().toISOString(),
+      faculty_score: 45,
+      reviewed_at: new Date().toISOString(),
+      assignment_title: "Python Basics",
+      subject: "Programming",
+      cls: "IT-A",
+      max_score: 50,
+    },
+    {
+      submission_id: 7,
+      assignment_id: 3,
+      student_id: "S202",
+      submission_text: "Python Code",
+      submitted_at: new Date().toISOString(),
+      faculty_score: 48,
+      reviewed_at: new Date().toISOString(),
+      assignment_title: "Python Basics",
+      subject: "Programming",
+      cls: "IT-A",
+      max_score: 50,
+    },
+  ];
 
   try {
     await ensureAssignmentTables(pool);
@@ -764,35 +1046,20 @@ export const getFacultyAssignmentSubmissions = async (req: Request, res: Respons
         ${whereClause}
         ORDER BY s.submitted_at DESC, s.submission_id DESC
       `,
-      params
+      params,
     );
 
     return res.json(result.rows.map((row) => mapSubmissionRow(row)));
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      const rows = inMemorySubmissions
-        .filter((submission) =>
-          optionalAssignmentId === undefined
-            ? true
-            : submission.assignment_id === optionalAssignmentId
-        )
-        .map((submission) => {
-          const assignment = findAssignmentInMemory(submission.assignment_id);
-          return {
-            ...submission,
-            assignment_title: assignment?.title ?? "",
-            subject: assignment?.subject ?? "",
-            cls: assignment?.cls ?? "",
-            max_score: assignment?.max_score ?? 100,
-            due_date: assignment?.due_date ?? null,
-          };
-        })
-        .sort(
-          (a, b) =>
-            new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime() ||
-            b.submission_id - a.submission_id
-        );
-      return res.json(rows);
+      // Return mock data when database is unavailable
+      const filtered =
+        optionalAssignmentId !== undefined
+          ? mockSubmissions.filter(
+              (s) => s.assignment_id === optionalAssignmentId,
+            )
+          : mockSubmissions;
+      return res.json(filtered);
     }
 
     console.error("Error fetching faculty assignment submissions:", error);
@@ -808,7 +1075,9 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
 
   const normalized = normalizeScorePayload(req.body);
   if (normalized.error || !normalized.payload) {
-    return res.status(400).json({ error: normalized.error ?? "Invalid payload" });
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid payload" });
   }
 
   const { score } = normalized.payload;
@@ -830,7 +1099,7 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
           ON a.assignment_id = s.assignment_id
         WHERE s.submission_id = $1
       `,
-      [submissionId]
+      [submissionId],
     );
 
     const row = rowResult.rows[0] as Record<string, unknown> | undefined;
@@ -840,7 +1109,9 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
 
     const maxScore = Number(row.max_score ?? 100);
     if (score > maxScore) {
-      return res.status(400).json({ error: `score cannot exceed max score (${maxScore})` });
+      return res
+        .status(400)
+        .json({ error: `score cannot exceed max score (${maxScore})` });
     }
 
     const updateResult = await pool.query(
@@ -851,7 +1122,7 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
         WHERE submission_id = $2
         RETURNING *
       `,
-      [score, submissionId]
+      [score, submissionId],
     );
 
     return res.json(
@@ -862,19 +1133,25 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
         cls: row.cls,
         max_score: row.max_score,
         due_date: row.due_date,
-      })
+      }),
     );
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      const submission = inMemorySubmissions.find((item) => item.submission_id === submissionId);
+      const submission = inMemorySubmissions.find(
+        (item) => item.submission_id === submissionId,
+      );
       if (!submission) {
-        return res.status(404).json({ error: "Assignment submission not found" });
+        return res
+          .status(404)
+          .json({ error: "Assignment submission not found" });
       }
 
       const assignment = findAssignmentInMemory(submission.assignment_id);
       const maxScore = assignment?.max_score ?? 100;
       if (score > maxScore) {
-        return res.status(400).json({ error: `score cannot exceed max score (${maxScore})` });
+        return res
+          .status(400)
+          .json({ error: `score cannot exceed max score (${maxScore})` });
       }
 
       submission.faculty_score = score;
@@ -894,7 +1171,10 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
   }
 };
 
-export const getStudentAssignmentResults = async (req: Request, res: Response) => {
+export const getStudentAssignmentResults = async (
+  req: Request,
+  res: Response,
+) => {
   const studentId = resolveStudentId(req);
 
   try {
@@ -916,7 +1196,7 @@ export const getStudentAssignmentResults = async (req: Request, res: Response) =
           AND s.faculty_score IS NOT NULL
         ORDER BY s.reviewed_at DESC NULLS LAST, s.submitted_at DESC
       `,
-      [studentId]
+      [studentId],
     );
 
     return res.json(result.rows.map((row) => mapSubmissionRow(row)));

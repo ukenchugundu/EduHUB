@@ -14,3 +14,5 @@ database/.env
 
 .DS_Store
 *.log
+
+/generated/prisma

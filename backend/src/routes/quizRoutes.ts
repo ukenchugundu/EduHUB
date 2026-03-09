@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router } from "express";
 import {
   createQuiz,
   deleteQuiz,
@@ -13,7 +13,10 @@ import {
   uploadFacultyResultScore,
   updateQuiz,
   updateQuizStatus,
-} from '../controllers/quizController';
+} from "../controllers/quizController";
+import {
+  getStudentHistory,
+} from "../controllers/historyController";
 import {
   createAssignment,
   deleteAssignment,
@@ -23,15 +26,16 @@ import {
   getStudentAssignmentSubmissions,
   submitAssignment,
   updateAssignment,
+  uploadAssignmentFile,
   uploadAssignmentScore,
-} from '../controllers/assignmentController';
+} from "../controllers/assignmentController";
 import {
   createNote,
   deleteNote,
   getNotes,
   updateNote,
   uploadNoteFile,
-} from '../controllers/notesController';
+} from "../controllers/notesController";
 import {
   createMemberByAdmin,
   deleteAdminMember,
@@ -44,47 +48,53 @@ import {
   resetPassword,
   updateAdminMember,
   verifyLoginOtp,
-} from '../controllers/authController';
+} from "../controllers/authController";
 
 const router = Router();
 
-router.get('/quizzes', getQuizzes);
-router.get('/quizzes/:id', getQuizById);
-router.post('/quizzes', createQuiz);
-router.put('/quizzes/:id', updateQuiz);
-router.patch('/quizzes/:id/status', updateQuizStatus);
-router.delete('/quizzes/:id', deleteQuiz);
-router.post('/quizzes/:id/attempts/start', startQuizAttempt);
-router.get('/quizzes/:id/attempts/:attemptId', getQuizAttempt);
-router.put('/quizzes/:id/attempts/:attemptId/answers', saveQuizAttemptAnswers);
-router.post('/quizzes/:id/attempts/:attemptId/submit', submitQuizAttempt);
-router.get('/faculty/results', getFacultyResults);
-router.patch('/faculty/results/:attemptId/score', uploadFacultyResultScore);
-router.get('/student/results', getStudentResults);
-router.get('/assignments', getAssignments);
-router.post('/assignments', createAssignment);
-router.put('/assignments/:assignmentId', updateAssignment);
-router.delete('/assignments/:assignmentId', deleteAssignment);
-router.post('/assignments/:assignmentId/submissions', submitAssignment);
-router.get('/student/assignments/submissions', getStudentAssignmentSubmissions);
-router.get('/student/assignments/results', getStudentAssignmentResults);
-router.get('/faculty/assignments/submissions', getFacultyAssignmentSubmissions);
-router.patch('/faculty/assignments/submissions/:submissionId/score', uploadAssignmentScore);
-router.get('/notes', getNotes);
-router.post('/notes/upload', uploadNoteFile);
-router.post('/notes', createNote);
-router.put('/notes/:noteId', updateNote);
-router.delete('/notes/:noteId', deleteNote);
-router.post('/auth/register', registerUser);
-router.post('/auth/login', loginUser);
-router.post('/auth/login/verify-otp', verifyLoginOtp);
-router.post('/auth/login/resend-otp', resendLoginOtp);
-router.post('/auth/forgot-password', requestPasswordReset);
-router.post('/auth/reset-password', resetPassword);
-router.post('/auth/admin/create-member', createMemberByAdmin);
-router.get('/auth/admin/dashboard', getAdminDashboardData);
-router.get('/auth/admin/members', getAdminMembers);
-router.put('/auth/admin/members/:memberId', updateAdminMember);
-router.delete('/auth/admin/members/:memberId', deleteAdminMember);
+router.get("/quizzes", getQuizzes);
+router.get("/quizzes/:id", getQuizById);
+router.post("/quizzes", createQuiz);
+router.put("/quizzes/:id", updateQuiz);
+router.patch("/quizzes/:id/status", updateQuizStatus);
+router.delete("/quizzes/:id", deleteQuiz);
+router.post("/quizzes/:id/attempts/start", startQuizAttempt);
+router.get("/quizzes/:id/attempts/:attemptId", getQuizAttempt);
+router.put("/quizzes/:id/attempts/:attemptId/answers", saveQuizAttemptAnswers);
+router.post("/quizzes/:id/attempts/:attemptId/submit", submitQuizAttempt);
+router.get("/faculty/results", getFacultyResults);
+router.get("/faculty/performance", getFacultyResults); // Student Performance page
+router.patch("/faculty/results/:attemptId/score", uploadFacultyResultScore);
+router.get("/student/results", getStudentResults);
+router.get("/assignments", getAssignments);
+router.post("/assignments/upload", uploadAssignmentFile);
+router.post("/assignments", createAssignment);
+router.put("/assignments/:assignmentId", updateAssignment);
+router.delete("/assignments/:assignmentId", deleteAssignment);
+router.post("/assignments/:assignmentId/submissions", submitAssignment);
+router.get("/student/history/:studentId", getStudentHistory);
+router.get("/student/assignments/submissions", getStudentAssignmentSubmissions);
+router.get("/student/assignments/results", getStudentAssignmentResults);
+router.get("/faculty/assignments/submissions", getFacultyAssignmentSubmissions);
+router.patch(
+  "/faculty/assignments/submissions/:submissionId/score",
+  uploadAssignmentScore,
+);
+router.get("/notes", getNotes);
+router.post("/notes/upload", uploadNoteFile);
+router.post("/notes", createNote);
+router.put("/notes/:noteId", updateNote);
+router.delete("/notes/:noteId", deleteNote);
+router.post("/auth/register", registerUser);
+router.post("/auth/login", loginUser);
+router.post("/auth/login/verify-otp", verifyLoginOtp);
+router.post("/auth/login/resend-otp", resendLoginOtp);
+router.post("/auth/forgot-password", requestPasswordReset);
+router.post("/auth/reset-password", resetPassword);
+router.post("/auth/admin/create-member", createMemberByAdmin);
+router.get("/auth/admin/dashboard", getAdminDashboardData);
+router.get("/auth/admin/members", getAdminMembers);
+router.put("/auth/admin/members/:memberId", updateAdminMember);
+router.delete("/auth/admin/members/:memberId", deleteAdminMember);
 
 export default router;

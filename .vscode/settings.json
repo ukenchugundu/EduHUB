@@ -1,0 +1,18 @@
+{
+    "sqltools.connections": [
+        {
+            "pgOptions": {
+                "ssl": {
+                    "rejectUnauthorized": false
+                }
+            },
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "driver": "PostgreSQL",
+            "name": "EduHUB",
+            "group": "Supabase",
+            "connectString": "postgresql://postgres:Supabase-EduHUB123-HigherEducation2026@db.eowbssqeqjjhayliwvay.supabase.co:5432/postgres",
+            "connectionTimeout": 20000
+        }
+    ]
+}
