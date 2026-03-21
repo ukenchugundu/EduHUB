@@ -435,10 +435,26 @@ const decorateInMemoryEvent = (event: EventRecord, userId: number): EventRecord 
   };
 };
 
-const listInMemoryEvents = (userId: number): EventRecord[] => {
+const listInMemoryEvents = (
+  userId: number,
+  options?: { upcomingOnly?: boolean },
+): EventRecord[] => {
   ensureSampleEventInMemory();
+  const now = new Date();
+
   return inMemoryEvents
     .slice()
+    .filter((event) => {
+      if (!options?.upcomingOnly) {
+        return true;
+      }
+      const eventDate = new Date(event.event_date);
+      const status = String(event.status ?? "").toLowerCase();
+      return (
+        eventDate >= now &&
+        (status === "upcoming" || status === "ongoing")
+      );
+    })
     .sort(
       (a, b) =>
         new Date(a.event_date).getTime() - new Date(b.event_date).getTime(),
@@ -574,8 +590,21 @@ const getInMemoryRegistrationsForEvent = (
         new Date(a.registered_at).getTime(),
     );
 
-const loadEventsFromDatabase = async (userId: number): Promise<EventRecord[]> => {
+const loadEventsFromDatabase = async (
+  userId: number,
+  options?: { upcomingOnly?: boolean },
+): Promise<EventRecord[]> => {
   await ensureEventTables(pool);
+  const conditions: string[] = [];
+
+  if (options?.upcomingOnly) {
+    conditions.push(
+      `(COALESCE(e.status, 'upcoming') IN ('upcoming','ongoing') AND e.event_date >= NOW())`,
+    );
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
   const result = await pool.query(`
     SELECT
       e.id,
@@ -598,6 +627,7 @@ const loadEventsFromDatabase = async (userId: number): Promise<EventRecord[]> =>
     LEFT JOIN event_registrations er ON e.id = er.event_id
     LEFT JOIN event_registrations er_user
       ON e.id = er_user.event_id AND er_user.user_id = $1
+    ${whereClause}
     GROUP BY e.id, u.full_name
     ORDER BY e.event_date ASC
   `, [userId]);
@@ -627,15 +657,19 @@ const loadEventRegistrationsFromDatabase = async (
 
 export const getEvents = async (req: Request, res: Response) => {
   const requester = getAuthenticatedUser(req);
-  if (!requester) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  const upcomingOnly = !requester;
 
   try {
-    return res.json(await loadEventsFromDatabase(requester.userId));
+    return res.json(
+      await loadEventsFromDatabase(requester?.userId ?? 0, {
+        upcomingOnly,
+      }),
+    );
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      return res.json(listInMemoryEvents(requester.userId));
+      return res.json(listInMemoryEvents(requester?.userId ?? 0, {
+        upcomingOnly,
+      }));
     }
 
     console.error("Error fetching events:", error);

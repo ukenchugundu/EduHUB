@@ -9,6 +9,7 @@ import {
   Users,
 } from "lucide-react";
 import AdminLayout from "@/components/AdminLayout";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
 import {
   Table,
   TableBody,
@@ -90,7 +91,8 @@ const TIMETABLE_SLOTS = [
 const getAuthToken = (): string | null => {
   try {
     const authData = localStorage.getItem("eduhub_auth");
-    return authData ? JSON.parse(authData).token ?? null : null;
+    const token = authData ? (JSON.parse(authData).token as string | undefined) : undefined;
+    return token && token.trim() ? token : null;
   } catch {
     return null;
   }
@@ -101,23 +103,23 @@ const requestJson = async <T,>(
   options?: RequestInit,
   fallbackError = "Request failed.",
 ): Promise<T> => {
-  const headers = new Headers(options?.headers);
   const token = getAuthToken();
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
-
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error((body as { error?: string }).error || fallbackError);
-  }
-
-  return body as T;
+  return apiRequestJson<T>(
+    url,
+    {
+      ...options,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options?.headers ?? {}),
+      },
+    },
+    {
+      fallbackError,
+      retries: 1,
+      timeoutMs: 8000,
+      includeAuth: false,
+    },
+  );
 };
 
 const formatWeekday = (weekday?: number): string =>
@@ -184,6 +186,9 @@ const AdminSchedule = () => {
   const [loadingBatches, setLoadingBatches] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [autoGenerating, setAutoGenerating] = useState(false);
+  const [clearingTimetable, setClearingTimetable] = useState(false);
+  const [autoGenerateQuery, setAutoGenerateQuery] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
@@ -342,33 +347,33 @@ const AdminSchedule = () => {
     void loadBatches();
   }, [filters.departmentId, filters.academicYear, filters.semester]);
 
+  const fetchBatchSessions = async (batchId: string) => {
+    if (!batchId) {
+      setBatchSessions([]);
+      return;
+    }
+
+    try {
+      setLoadingSessions(true);
+      const data = await requestJson<TimetableEntry[]>(
+        `${API_BASE}/api/timetable/batches/${batchId}/entries`,
+        undefined,
+        "Failed to load batch timetable.",
+      );
+      setBatchSessions(data);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Failed to load batch timetable.",
+      );
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
   useEffect(() => {
-    const loadBatchSessions = async () => {
-      if (!form.batchId) {
-        setBatchSessions([]);
-        return;
-      }
-
-      try {
-        setLoadingSessions(true);
-        const data = await requestJson<TimetableEntry[]>(
-          `${API_BASE}/api/timetable/batches/${form.batchId}/entries`,
-          undefined,
-          "Failed to load batch timetable.",
-        );
-        setBatchSessions(data);
-      } catch (error) {
-        setErrorMessage(
-          error instanceof Error
-            ? error.message
-            : "Failed to load batch timetable.",
-        );
-      } finally {
-        setLoadingSessions(false);
-      }
-    };
-
-    void loadBatchSessions();
+    void fetchBatchSessions(form.batchId);
   }, [form.batchId]);
 
   useEffect(() => {
@@ -455,6 +460,79 @@ const AdminSchedule = () => {
       );
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleClearTimetable = async () => {
+    if (!form.batchId) {
+      return;
+    }
+
+    if (
+      !window.confirm(
+        "This will remove all timetable entries for the selected class. Continue?",
+      )
+    ) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      setClearingTimetable(true);
+      await requestJson<void>(
+        `${API_BASE}/api/timetable/batches/${form.batchId}/entries`,
+        {
+          method: "DELETE",
+        },
+        "Failed to clear timetable.",
+      );
+      setSuccessMessage(
+        "Existing timetable entries cleared. You can now auto-generate a new schedule or build it manually.",
+      );
+      setBatchSessions([]);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Failed to clear timetable.",
+      );
+    } finally {
+      setClearingTimetable(false);
+    }
+  };
+
+  const handleAutoGenerateTimetable = async () => {
+    if (!form.batchId) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      setAutoGenerating(true);
+      const generatedSessions = await requestJson<TimetableEntry[]>(
+        `${API_BASE}/api/timetable/batches/${form.batchId}/auto-generate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: autoGenerateQuery,
+            clearExisting: true,
+          }),
+        },
+        "Failed to auto-generate timetable.",
+      );
+      setSuccessMessage(
+        "Timetable auto-generated. Review the timetable preview and adjust slots as needed.",
+      );
+      setBatchSessions(generatedSessions);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Failed to auto-generate timetable.",
+      );
+    } finally {
+      setAutoGenerating(false);
     }
   };
 
@@ -628,6 +706,51 @@ const AdminSchedule = () => {
               {(loadingBatches || loadingSessions) && (
                 <Loader2 className="h-5 w-5 animate-spin text-primary" />
               )}
+            </div>
+
+            <div className="mb-6 rounded-2xl border border-border/60 bg-secondary/30 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Auto-generate timetable</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Tell EduHub how you’d like the weekly schedule laid out. The existing timetable entries will be cleared before generating.
+                  </p>
+                </div>
+                <div className="space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleClearTimetable}
+                    disabled={
+                      !form.batchId || clearingTimetable || loadingSessions || loadingBatches
+                    }
+                    className="rounded-2xl border border-border bg-background px-4 py-2 text-sm font-semibold text-muted-foreground transition hover:bg-secondary/40 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {clearingTimetable ? "Clearing..." : "Clear timetable"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAutoGenerateTimetable}
+                    disabled={
+                      !form.batchId || autoGenerating || clearingTimetable || loadingSessions || loadingBatches
+                    }
+                    className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {autoGenerating ? "Generating..." : "Generate timetable"}
+                  </button>
+                </div>
+              </div>
+
+              <label className="mt-4 block text-sm">
+                <span className="text-muted-foreground">Generation prompt (optional)</span>
+                <textarea
+                  rows={3}
+                  value={autoGenerateQuery}
+                  onChange={(event) => setAutoGenerateQuery(event.target.value)}
+                  placeholder="e.g. Spread required topics evenly across the week, avoid repeating faculty in the same day"
+                  className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none transition focus:border-primary"
+                  disabled={!form.batchId || clearingTimetable || autoGenerating}
+                />
+              </label>
             </div>
 
             {loadingReferences ? (

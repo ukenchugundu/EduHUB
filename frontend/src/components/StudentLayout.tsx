@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -23,6 +23,7 @@ import {
 import {
   getProfileIdentifierLabel,
   getProfileIdentifierValue,
+  mergeStoredAuth,
   readStoredAuth,
   readStoredProfileImage,
 } from "@/lib/authSession";
@@ -43,6 +44,8 @@ const sidebarItems = [
   { label: "History", icon: Clock, path: "/student/history" },
 ];
 
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
 const StudentLayoutShell = ({ children }: { children: React.ReactNode }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -51,13 +54,61 @@ const StudentLayoutShell = ({ children }: { children: React.ReactNode }) => {
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 1024);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const auth = useMemo(() => readStoredAuth(), []);
+  const [auth, setAuth] = useState(() => readStoredAuth());
+  const profileImage = readStoredProfileImage(auth);
+
+  useEffect(() => {
+    const loadLiveStudentProfile = async () => {
+      if (!auth?.token) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${auth.token}`,
+          },
+        });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const data = (await response.json()) as {
+          fullName?: string;
+          rollNumber?: string;
+          studentId?: string;
+          department?: string;
+          academicYear?: string;
+          section?: string;
+          batchName?: string;
+        };
+
+        const nextAuth =
+          mergeStoredAuth({
+            fullName: data.fullName || auth.fullName,
+            rollNumber: data.rollNumber || auth.rollNumber,
+            studentId: data.studentId || auth.studentId,
+            department: data.department || auth.department,
+            academicYear: data.academicYear || auth.academicYear,
+            section: data.section || auth.section,
+            batchName: data.batchName || auth.batchName,
+          }) || auth;
+
+        setAuth(nextAuth);
+      } catch (error) {
+        console.error("Failed to refresh student layout profile:", error);
+      }
+    };
+
+    void loadLiveStudentProfile();
+  }, [auth?.academicYear, auth?.batchName, auth?.department, auth?.fullName, auth?.rollNumber, auth?.section, auth?.studentId, auth?.token]);
+
   const profileName =
-    auth?.fullName?.trim() || auth?.email.split("@")[0] || "Student";
+    auth?.fullName?.trim() || auth?.email?.split("@")[0] || "Student";
   const profileEmail = auth?.email || "-";
   const profileIdentifierLabel = getProfileIdentifierLabel(auth);
   const profileIdentifierValue = getProfileIdentifierValue(auth);
-  const profileImage = readStoredProfileImage(auth);
 
   const handleLogout = () => {
     localStorage.removeItem("eduhub_auth");

@@ -1,5 +1,4 @@
 import { Pool } from "pg";
-import Redis from "ioredis";
 
 interface PerformanceMetrics {
   student_id: string;
@@ -23,12 +22,9 @@ interface StudentPerformanceQuery {
 
 export class PerformanceService {
   private db: Pool;
-  private redis: Redis;
-  private readonly CACHE_TTL = 300; // 5 minutes
 
-  constructor(db: Pool, redis: Redis) {
+  constructor(db: Pool) {
     this.db = db;
-    this.redis = redis;
   }
 
   // Batch update performance metrics (for daily processing)
@@ -73,8 +69,6 @@ export class PerformanceService {
         "REFRESH MATERIALIZED VIEW CONCURRENTLY student_performance_summary",
       );
 
-      // Clear related cache
-      await this.redis.del("performance:*");
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -90,13 +84,6 @@ export class PerformanceService {
     page: number;
     totalPages: number;
   }> {
-    const cacheKey = `performance:${JSON.stringify(query)}`;
-    const cached = await this.redis.get(cacheKey);
-
-    if (cached) {
-      return JSON.parse(cached);
-    }
-
     const limit = query.limit || 50;
     const offset = query.offset || 0;
     const sortBy = query.sortBy || "literacy_percentage";
@@ -164,21 +151,11 @@ export class PerformanceService {
       totalPages,
     };
 
-    // Cache for 5 minutes
-    await this.redis.setex(cacheKey, this.CACHE_TTL, JSON.stringify(result));
-
     return result;
   }
 
   // Get department analytics with caching
   async getDepartmentAnalytics(): Promise<any> {
-    const cacheKey = "analytics:departments";
-    const cached = await this.redis.get(cacheKey);
-
-    if (cached) {
-      return JSON.parse(cached);
-    }
-
     const query = `
       SELECT 
         d.name as department,
@@ -196,9 +173,6 @@ export class PerformanceService {
     `;
 
     const result = await this.db.query(query);
-
-    // Cache for 10 minutes
-    await this.redis.setex(cacheKey, 600, JSON.stringify(result.rows));
 
     return result.rows;
   }
@@ -236,8 +210,6 @@ export class PerformanceService {
 
       await client.query("COMMIT");
 
-      // Clear attendance cache
-      await this.redis.del("attendance:*");
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

@@ -1,0 +1,16 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "ignorePaths": [
+    "**/.env",
+    "**/.env.*"
+  ],
+  "words": [
+    "autoincrement",
+    "dotenv",
+    "fkey",
+    "Grotesk",
+    "initdb",
+    "Supabase"
+  ]
+}

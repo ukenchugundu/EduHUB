@@ -1,5 +1,10 @@
 import { Request, Response } from "express";
 import pool from "../utils/db";
+import {
+  getAcademicTableNames,
+  getBatchStudentRows as getPortalBatchStudentRows,
+  getStudentBatchIdForAuthUser,
+} from "../utils/studentPortalAccess";
 
 const UNDEFINED_TABLE_ERROR_CODE = "42P01";
 
@@ -10,19 +15,133 @@ const isUndefinedTableError = (error: unknown): boolean =>
   (error as { code?: string }).code === UNDEFINED_TABLE_ERROR_CODE;
 
 const getStudentBatchId = async (userId?: number): Promise<number | null> => {
-  if (!userId) {
-    return null;
-  }
+  return getStudentBatchIdForAuthUser(pool, userId);
+};
 
-  for (const tableName of ["batch_students", "batch_student"] as const) {
-    try {
-      const result = await pool.query<{ batch_id: number }>(
-        `SELECT batch_id FROM ${tableName} WHERE student_id = $1 LIMIT 1`,
-        [userId],
+const getEmptyStudentSchedule = () => ({
+  today: [],
+  upcoming: [],
+});
+
+const buildSubjectCode = (name: string): string =>
+  name
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "SUB";
+
+const DEFAULT_SUBJECTS = [
+  { id: 1, name: "Data Structures & Algorithms", code: "DSA" },
+  { id: 2, name: "Database Management Systems", code: "DBMS" },
+  { id: 3, name: "Operating Systems", code: "OS" },
+  { id: 4, name: "Computer Networks", code: "CN" },
+  { id: 5, name: "Software Engineering", code: "SE" },
+  { id: 6, name: "Machine Learning", code: "ML" },
+  { id: 7, name: "Artificial Intelligence", code: "AI" },
+  { id: 8, name: "Web Technologies", code: "WT" },
+  { id: 9, name: "Cloud Computing", code: "CC" },
+  { id: 10, name: "Cybersecurity", code: "CS" },
+] as const;
+
+const getBatchStudentRows = async (batchId: number) => {
+  return getPortalBatchStudentRows(pool, batchId);
+};
+
+let attendanceTablesReadyPromise: Promise<boolean> | null = null;
+
+const ensureAttendanceTables = async (): Promise<boolean> => {
+  if (!attendanceTablesReadyPromise) {
+    attendanceTablesReadyPromise = (async () => {
+      const { batchTableName } = await getAcademicTableNames(pool);
+      if (!batchTableName) {
+        return false;
+      }
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS attendance_sessions (
+          id SERIAL PRIMARY KEY,
+          batch_id INTEGER REFERENCES ${batchTableName}(id) ON DELETE CASCADE,
+          faculty_id INTEGER REFERENCES auth_users(auth_user_id),
+          subject VARCHAR(255) NOT NULL,
+          topic VARCHAR(255),
+          session_date DATE NOT NULL,
+          start_time TIME NOT NULL,
+          end_time TIME,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(batch_id, subject, session_date, start_time)
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS attendance_records (
+          id SERIAL PRIMARY KEY,
+          session_id INTEGER REFERENCES attendance_sessions(id) ON DELETE CASCADE,
+          student_id INTEGER REFERENCES auth_users(auth_user_id),
+          status VARCHAR(20) NOT NULL CHECK (status IN ('present', 'absent', 'late', 'excused')),
+          marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          marked_by INTEGER REFERENCES auth_users(auth_user_id),
+          UNIQUE(session_id, student_id)
+        )
+      `);
+
+      await pool.query(
+        "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS topic VARCHAR(255)",
+      );
+      await pool.query(
+        "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+      );
+      await pool.query(
+        "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS marked_by INTEGER REFERENCES auth_users(auth_user_id)",
       );
 
+      await pool.query(
+        "CREATE INDEX IF NOT EXISTS idx_attendance_sessions_batch_id ON attendance_sessions(batch_id)",
+      );
+      await pool.query(
+        "CREATE INDEX IF NOT EXISTS idx_attendance_sessions_date ON attendance_sessions(session_date)",
+      );
+      await pool.query(
+        "CREATE INDEX IF NOT EXISTS idx_attendance_records_session_id ON attendance_records(session_id)",
+      );
+      await pool.query(
+        "CREATE INDEX IF NOT EXISTS idx_attendance_records_student_id ON attendance_records(student_id)",
+      );
+
+      return true;
+    })().catch((error) => {
+      attendanceTablesReadyPromise = null;
+      throw error;
+    });
+  }
+
+  return attendanceTablesReadyPromise;
+};
+
+const getAvailableSubjectsFromDb = async () => {
+  const collected = new Map<string, { name: string; code: string }>();
+
+  for (const tableName of ["subjects", "subject"] as const) {
+    try {
+      const result = await pool.query<{ name: string | null; code: string | null }>(
+        `SELECT name, code FROM ${tableName} ORDER BY name`,
+      );
+      for (const row of result.rows) {
+        const name = String(row.name ?? "").trim();
+        if (!name) {
+          continue;
+        }
+        collected.set(name.toLowerCase(), {
+          name,
+          code: String(row.code ?? "").trim() || buildSubjectCode(name),
+        });
+      }
       if (result.rows.length > 0) {
-        return Number(result.rows[0].batch_id);
+        return Array.from(collected.values()).map((subject, index) => ({
+          id: index + 1,
+          ...subject,
+        }));
       }
     } catch (error) {
       if (isUndefinedTableError(error)) {
@@ -33,45 +152,58 @@ const getStudentBatchId = async (userId?: number): Promise<number | null> => {
     }
   }
 
-  return null;
-};
+  for (const tableName of ["timetable_entries", "attendance_sessions"] as const) {
+    try {
+      const result = await pool.query<{ subject: string | null }>(
+        `
+          SELECT DISTINCT subject
+          FROM ${tableName}
+          WHERE subject IS NOT NULL AND TRIM(subject) <> ''
+          ORDER BY subject
+        `,
+      );
+      for (const row of result.rows) {
+        const name = String(row.subject ?? "").trim();
+        if (!name) {
+          continue;
+        }
+        if (!collected.has(name.toLowerCase())) {
+          collected.set(name.toLowerCase(), {
+            name,
+            code: buildSubjectCode(name),
+          });
+        }
+      }
+    } catch (error) {
+      if (isUndefinedTableError(error)) {
+        continue;
+      }
 
-const getMockStudentSchedule = () => ({
-  today: [
-    {
-      id: 1,
-      subject: "Data Structures & Algorithms",
-      start_time: "09:00:00",
-      end_time: "09:50:00",
-      faculty_name: "Dr. Smith",
-      room: "LH-101",
-    },
-    {
-      id: 2,
-      subject: "Operating Systems",
-      start_time: "11:00:00",
-      end_time: "11:50:00",
-      faculty_name: "Prof. Johnson",
-      room: "LH-102",
-    },
-  ],
-  upcoming: [
-    {
-      id: 3,
-      subject: "Database Management Systems",
-      session_date: new Date(Date.now() + 86400000).toISOString().split("T")[0],
-      start_time: "10:00:00",
-      end_time: "10:50:00",
-      faculty_name: "Dr. Brown",
-      room: "LH-201",
-    },
-  ],
-});
+      throw error;
+    }
+  }
+
+  if (collected.size === 0) {
+    return [...DEFAULT_SUBJECTS];
+  }
+
+  return Array.from(collected.values()).map((subject, index) => ({
+    id: index + 1,
+    ...subject,
+  }));
+};
 
 // Get all departments
 export const getDepartments = async (req: Request, res: Response) => {
   try {
-    const result = await pool.query("SELECT * FROM departments ORDER BY name");
+    const { departmentTableName } = await getAcademicTableNames(pool);
+    if (!departmentTableName) {
+      return res.json([]);
+    }
+
+    const result = await pool.query(
+      `SELECT * FROM ${departmentTableName} ORDER BY name`,
+    );
     res.json(result.rows);
   } catch (error) {
     console.error("Error fetching departments:", error);
@@ -83,11 +215,18 @@ export const getDepartments = async (req: Request, res: Response) => {
 export const getBatches = async (req: Request, res: Response) => {
   try {
     const { departmentId, academicYear, semester } = req.query;
+    const { batchTableName, departmentTableName } = await getAcademicTableNames(
+      pool,
+    );
+
+    if (!batchTableName || !departmentTableName) {
+      return res.json([]);
+    }
 
     let query = `
       SELECT b.*, d.name as department_name, d.code as department_code
-      FROM batches b
-      JOIN departments d ON b.department_id = d.id
+      FROM ${batchTableName} b
+      JOIN ${departmentTableName} d ON b.department_id = d.id
       WHERE 1=1
     `;
     const params: any[] = [];
@@ -118,8 +257,13 @@ export const getBatches = async (req: Request, res: Response) => {
 // Get available academic years
 export const getAcademicYears = async (req: Request, res: Response) => {
   try {
+    const { batchTableName } = await getAcademicTableNames(pool);
+    if (!batchTableName) {
+      return res.json([]);
+    }
+
     const result = await pool.query(
-      "SELECT DISTINCT academic_year FROM batches ORDER BY academic_year DESC",
+      `SELECT DISTINCT academic_year FROM ${batchTableName} ORDER BY academic_year DESC`,
     );
     res.json(result.rows.map((r) => r.academic_year));
   } catch (error) {
@@ -131,18 +275,13 @@ export const getAcademicYears = async (req: Request, res: Response) => {
 // Get students in a batch
 export const getBatchStudents = async (req: Request, res: Response) => {
   try {
-    const { batchId } = req.params;
+    const parsedBatchId = Number(req.params.batchId);
+    if (!Number.isInteger(parsedBatchId) || parsedBatchId <= 0) {
+      return res.status(400).json({ error: "Invalid batch id" });
+    }
 
-    // Get students from auth_users with roll_number for this batch
-    // For now, we'll get all students - in production, you'd have a batch_students table
-    const result = await pool.query(
-      `SELECT auth_user_id as id, full_name, email, roll_number 
-       FROM auth_users 
-       WHERE role = 'student' 
-       ORDER BY roll_number, full_name`,
-    );
-
-    res.json(result.rows);
+    const rows = await getBatchStudentRows(parsedBatchId);
+    res.json(rows);
   } catch (error) {
     console.error("Error fetching batch students:", error);
     res.status(500).json({ error: "Failed to fetch students" });
@@ -152,21 +291,7 @@ export const getBatchStudents = async (req: Request, res: Response) => {
 // Get subjects for a batch (from faculty's subjects or a subjects table)
 export const getSubjects = async (req: Request, res: Response) => {
   try {
-    // Common subjects for CSE/CS/IT departments
-    const subjects = [
-      { id: 1, name: "Data Structures & Algorithms", code: "DSA" },
-      { id: 2, name: "Database Management Systems", code: "DBMS" },
-      { id: 3, name: "Operating Systems", code: "OS" },
-      { id: 4, name: "Computer Networks", code: "CN" },
-      { id: 5, name: "Software Engineering", code: "SE" },
-      { id: 6, name: "Machine Learning", code: "ML" },
-      { id: 7, name: "Artificial Intelligence", code: "AI" },
-      { id: 8, name: "Web Technologies", code: "WT" },
-      { id: 9, name: "Cloud Computing", code: "CC" },
-      { id: 10, name: "Cybersecurity", code: "CS" },
-    ];
-
-    res.json(subjects);
+    res.json(await getAvailableSubjectsFromDb());
   } catch (error) {
     console.error("Error fetching subjects:", error);
     res.status(500).json({ error: "Failed to fetch subjects" });
@@ -176,15 +301,23 @@ export const getSubjects = async (req: Request, res: Response) => {
 // Get attendance sessions for a batch
 export const getAttendanceSessions = async (req: Request, res: Response) => {
   try {
+    await ensureAttendanceTables();
     const { batchId } = req.params;
     const { date, subject } = req.query;
     const { userId } = (req as any).user;
+    const { batchTableName, departmentTableName } = await getAcademicTableNames(
+      pool,
+    );
+
+    if (!batchTableName || !departmentTableName) {
+      return res.json([]);
+    }
 
     let query = `
       SELECT asess.*, b.name as batch_name, d.name as department_name
       FROM attendance_sessions asess
-      JOIN batches b ON asess.batch_id = b.id
-      JOIN departments d ON b.department_id = d.id
+      JOIN ${batchTableName} b ON asess.batch_id = b.id
+      JOIN ${departmentTableName} d ON b.department_id = d.id
       WHERE asess.batch_id = $1
     `;
     const params: any[] = [batchId];
@@ -211,6 +344,11 @@ export const getAttendanceSessions = async (req: Request, res: Response) => {
 // Create a new attendance session
 export const createAttendanceSession = async (req: Request, res: Response) => {
   try {
+    const attendanceTablesReady = await ensureAttendanceTables();
+    if (!attendanceTablesReady) {
+      return res.status(500).json({ error: "Attendance tables are not configured" });
+    }
+
     const {
       batchId,
       facultyId: requestedFacultyId,
@@ -297,6 +435,7 @@ export const createAttendanceSession = async (req: Request, res: Response) => {
 // Get attendance records for a session
 export const getAttendanceRecords = async (req: Request, res: Response) => {
   try {
+    await ensureAttendanceTables();
     const { sessionId } = req.params;
 
     const result = await pool.query(
@@ -318,10 +457,12 @@ export const getAttendanceRecords = async (req: Request, res: Response) => {
 // Mark attendance for students
 export const markAttendance = async (req: Request, res: Response) => {
   try {
-    const { sessionId, records } = req.body;
+    await ensureAttendanceTables();
+    const sessionId = Number(req.params.sessionId ?? req.body?.sessionId);
+    const { records } = req.body;
     const { userId } = (req as any).user;
 
-    if (!sessionId || !records || !Array.isArray(records)) {
+    if (!Number.isInteger(sessionId) || sessionId <= 0 || !records || !Array.isArray(records)) {
       return res
         .status(400)
         .json({ error: "sessionId and records array are required" });
@@ -366,7 +507,7 @@ export const markAttendance = async (req: Request, res: Response) => {
 
     // Mark session as inactive after attendance is marked
     await pool.query(
-      "UPDATE attendance_sessions SET is_active = FALSE WHERE id = $1",
+      "UPDATE attendance_sessions SET is_active = FALSE, end_time = COALESCE(end_time, TO_CHAR(CURRENT_TIME, 'HH24:MI:SS')) WHERE id = $1",
       [sessionId],
     );
 
@@ -383,6 +524,7 @@ export const getStudentAttendanceSummary = async (
   res: Response,
 ) => {
   try {
+    await ensureAttendanceTables();
     const { studentId } = req.params;
     const { batchId, subject, fromDate, toDate } = req.query;
     const { userId } = (req as any).user;
@@ -393,6 +535,21 @@ export const getStudentAttendanceSummary = async (
       return res
         .status(403)
         .json({ error: "Unauthorized to view other student attendance" });
+    }
+
+    const { batchTableName } = await getAcademicTableNames(pool);
+    if (!batchTableName) {
+      return res.json({
+        records: [],
+        summary: {
+          total: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          excused: 0,
+          attendancePercentage: 0,
+        },
+      });
     }
 
     let query = `
@@ -406,7 +563,7 @@ export const getStudentAttendanceSummary = async (
         au.full_name
       FROM attendance_records ar
       JOIN attendance_sessions asess ON ar.session_id = asess.id
-      JOIN batches b ON asess.batch_id = b.id
+      JOIN ${batchTableName} b ON asess.batch_id = b.id
       JOIN auth_users au ON ar.student_id = au.auth_user_id
       WHERE ar.student_id = $1
     `;
@@ -464,6 +621,7 @@ export const getBatchAttendanceOverview = async (
   res: Response,
 ) => {
   try {
+    await ensureAttendanceTables();
     const { batchId } = req.params;
     const { subject, fromDate, toDate } = req.query;
     const { userId } = (req as any).user;
@@ -511,8 +669,16 @@ export const getBatchAttendanceOverview = async (
 // Get faculty's active classes (attendance sessions for today or active sessions)
 export const getFacultyActiveClasses = async (req: Request, res: Response) => {
   try {
+    await ensureAttendanceTables();
     const { userId } = (req as any).user;
     const today = new Date().toISOString().split("T")[0];
+    const { batchTableName, departmentTableName } = await getAcademicTableNames(
+      pool,
+    );
+
+    if (!batchTableName || !departmentTableName) {
+      return res.json([]);
+    }
 
     // Get active attendance sessions for this faculty (today or ongoing)
     const result = await pool.query(
@@ -528,8 +694,8 @@ export const getFacultyActiveClasses = async (req: Request, res: Response) => {
         d.name as department_name,
         d.code as department_code
       FROM attendance_sessions asess
-      JOIN batches b ON asess.batch_id = b.id
-      JOIN departments d ON b.department_id = d.id
+      JOIN ${batchTableName} b ON asess.batch_id = b.id
+      JOIN ${departmentTableName} d ON b.department_id = d.id
       WHERE asess.faculty_id = $1
         AND (asess.session_date = $2 OR asess.is_active = TRUE)
       ORDER BY asess.session_date DESC, asess.start_time DESC
@@ -547,7 +713,19 @@ export const getFacultyActiveClasses = async (req: Request, res: Response) => {
 // Get faculty's assigned subjects/classes with student count
 export const getFacultyClasses = async (req: Request, res: Response) => {
   try {
+    await ensureAttendanceTables();
     const { userId } = (req as any).user;
+    const { batchTableName, departmentTableName } = await getAcademicTableNames(
+      pool,
+    );
+
+    if (!batchTableName || !departmentTableName) {
+      return res.json({
+        classes: [],
+        totalStudents: 0,
+        totalClasses: 0,
+      });
+    }
 
     // Get unique batch-subject combinations for this faculty
     const result = await pool.query(
@@ -563,8 +741,8 @@ export const getFacultyClasses = async (req: Request, res: Response) => {
         COUNT(DISTINCT asess.id) as session_count,
         MAX(asess.session_date) as last_session_date
       FROM attendance_sessions asess
-      JOIN batches b ON asess.batch_id = b.id
-      JOIN departments d ON b.department_id = d.id
+      JOIN ${batchTableName} b ON asess.batch_id = b.id
+      JOIN ${departmentTableName} d ON b.department_id = d.id
       WHERE asess.faculty_id = $1
       GROUP BY asess.batch_id, asess.subject, b.name, d.name, d.code, b.semester, b.academic_year
       ORDER BY asess.batch_id, asess.subject`,
@@ -594,7 +772,8 @@ export const getFacultyClasses = async (req: Request, res: Response) => {
 // Get pending grades (quiz and assignment submissions without scores)
 export const getFacultyPendingGrades = async (req: Request, res: Response) => {
   try {
-    const { userId } = (req as any).user;
+    await ensureAttendanceTables();
+    const { batchTableName } = await getAcademicTableNames(pool);
 
     // Get pending quiz results
     const pendingQuizResult = await pool.query(
@@ -614,33 +793,73 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
       LIMIT 50`,
     );
 
-    // Get pending assignment submissions (from tasks table)
+    // Get pending assignment submissions
     const pendingAssignmentResult = await pool.query(
       `SELECT 
-        ts.id as submission_id,
-        ts.task_id,
-        t.title as assignment_title,
-        t.cls as class_name,
-        ts.student_id,
-        ts.submitted_at,
+        asub.submission_id as id,
+        asub.assignment_id as reference_id,
+        a.title,
+        a.cls as class_name,
+        asub.student_id,
+        asub.submitted_at,
         'assignment' as type
-      FROM task_submissions ts
-      JOIN tasks t ON ts.task_id = t.id
-      WHERE ts.submitted_at IS NOT NULL 
-        AND ts.score IS NULL
-      ORDER BY ts.submitted_at DESC
+      FROM assignment_submissions asub
+      JOIN assignments a ON asub.assignment_id = a.assignment_id
+      WHERE asub.submitted_at IS NOT NULL 
+        AND asub.faculty_score IS NULL
+      ORDER BY asub.submitted_at DESC
+      LIMIT 50`,
+    );
+
+    const pendingTestResult = await pool.query(
+      `SELECT
+        ta.attempt_id as id,
+        ta.test_id as reference_id,
+        ct.title,
+        COALESCE(b.name, '') as class_name,
+        CAST(ta.student_id AS VARCHAR) as student_id,
+        ta.end_time as submitted_at,
+        'test' as type
+      FROM test_attempts ta
+      JOIN coding_tests ct ON ta.test_id = ct.id
+      ${batchTableName ? `LEFT JOIN ${batchTableName} b ON ct.batch_id = b.id` : "LEFT JOIN (SELECT NULL::INT AS id, ''::TEXT AS name) b ON FALSE"}
+      WHERE ta.status = 'Submitted'
+        AND ta.total_score IS NULL
+      ORDER BY ta.end_time DESC
       LIMIT 50`,
     );
 
     const pendingGrades = [
       ...pendingQuizResult.rows.map((row) => ({
+        id: row.id,
+        reference_id: row.quiz_id,
+        title: row.quiz_title,
+        class_name: row.class_name,
+        student_id: row.student_id,
+        type: row.type,
         ...row,
         submitted_at: row.submitted_at
           ? new Date(row.submitted_at).toISOString()
           : null,
       })),
       ...pendingAssignmentResult.rows.map((row) => ({
-        ...row,
+        id: row.id,
+        reference_id: row.reference_id,
+        title: row.title,
+        class_name: row.class_name,
+        student_id: row.student_id,
+        type: row.type,
+        submitted_at: row.submitted_at
+          ? new Date(row.submitted_at).toISOString()
+          : null,
+      })),
+      ...pendingTestResult.rows.map((row) => ({
+        id: row.id,
+        reference_id: row.reference_id,
+        title: row.title,
+        class_name: row.class_name,
+        student_id: row.student_id,
+        type: row.type,
         submitted_at: row.submitted_at
           ? new Date(row.submitted_at).toISOString()
           : null,
@@ -656,6 +875,7 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
       totalPending: pendingGrades.length,
       pendingQuizzes: pendingQuizResult.rows.length,
       pendingAssignments: pendingAssignmentResult.rows.length,
+      pendingTests: pendingTestResult.rows.length,
     });
   } catch (error) {
     console.error("Error fetching pending grades:", error);
@@ -666,10 +886,30 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
 // Get next scheduled class for faculty
 export const getFacultyNextClass = async (req: Request, res: Response) => {
   try {
+    await ensureAttendanceTables();
     const { userId } = (req as any).user;
     const now = new Date();
     const today = now.toISOString().split("T")[0];
     const currentTime = now.toTimeString().slice(0, 8);
+    const { batchTableName, departmentTableName } = await getAcademicTableNames(
+      pool,
+    );
+
+    if (!batchTableName || !departmentTableName) {
+      return res.json({
+        id: null,
+        batch_id: null,
+        subject: "",
+        session_date: "",
+        start_time: "",
+        end_time: null,
+        is_active: false,
+        batch_name: "",
+        department_name: "",
+        department_code: "",
+        nextClassType: "none",
+      });
+    }
 
     // Get today's remaining sessions
     const todayResult = await pool.query(
@@ -685,8 +925,8 @@ export const getFacultyNextClass = async (req: Request, res: Response) => {
         d.name as department_name,
         d.code as department_code
       FROM attendance_sessions asess
-      JOIN batches b ON asess.batch_id = b.id
-      JOIN departments d ON b.department_id = d.id
+      JOIN ${batchTableName} b ON asess.batch_id = b.id
+      JOIN ${departmentTableName} d ON b.department_id = d.id
       WHERE asess.faculty_id = $1
         AND asess.session_date = $2
         AND asess.start_time > $3
@@ -716,8 +956,8 @@ export const getFacultyNextClass = async (req: Request, res: Response) => {
         d.name as department_name,
         d.code as department_code
       FROM attendance_sessions asess
-      JOIN batches b ON asess.batch_id = b.id
-      JOIN departments d ON b.department_id = d.id
+      JOIN ${batchTableName} b ON asess.batch_id = b.id
+      JOIN ${departmentTableName} d ON b.department_id = d.id
       WHERE asess.faculty_id = $1
         AND asess.session_date > $2
       ORDER BY asess.session_date ASC, asess.start_time ASC
@@ -732,18 +972,17 @@ export const getFacultyNextClass = async (req: Request, res: Response) => {
       });
     }
 
-    // Return mock data for demo if no sessions exist
     res.json({
       id: null,
       batch_id: null,
-      subject: "Data Structures & Algorithms",
-      session_date: today,
-      start_time: "10:00:00",
-      end_time: "10:50:00",
+      subject: "",
+      session_date: "",
+      start_time: "",
+      end_time: null,
       is_active: false,
-      batch_name: "III CSE-A",
-      department_name: "Computer Science and Engineering",
-      department_code: "CSE",
+      batch_name: "",
+      department_name: "",
+      department_code: "",
       nextClassType: "none",
     });
   } catch (error) {
@@ -755,29 +994,52 @@ export const getFacultyNextClass = async (req: Request, res: Response) => {
 // Get students for a specific class (batch)
 export const getClassStudents = async (req: Request, res: Response) => {
   try {
-    const { batchId } = req.params;
+    await ensureAttendanceTables();
+    const parsedBatchId = Number(req.params.batchId);
     const { userId } = (req as any).user;
 
-    // Get students who have attendance records for this batch
-    const result = await pool.query(
-      `SELECT DISTINCT 
-        au.auth_user_id as student_id,
-        au.full_name,
-        au.email,
-        au.roll_number,
-        COUNT(ar.id) as attendance_count,
-        COUNT(CASE WHEN ar.status = 'present' THEN 1 END) as present_count,
-        ROUND(COUNT(CASE WHEN ar.status = 'present' THEN 1 END)::numeric / COUNT(ar.id)::numeric * 100, 2) as attendance_percentage
+    if (!Number.isInteger(parsedBatchId) || parsedBatchId <= 0) {
+      return res.status(400).json({ error: "Invalid batch id" });
+    }
+
+    const studentRows = await getBatchStudentRows(parsedBatchId);
+    const summaryResult = await pool.query(
+      `SELECT
+        ar.student_id,
+        COUNT(ar.id)::INT as attendance_count,
+        COUNT(CASE WHEN ar.status = 'present' THEN 1 END)::INT as present_count,
+        COALESCE(
+          ROUND(
+            COUNT(CASE WHEN ar.status = 'present' THEN 1 END)::numeric /
+            NULLIF(COUNT(ar.id), 0)::numeric * 100,
+            2
+          ),
+          0
+        ) as attendance_percentage
       FROM attendance_records ar
       JOIN attendance_sessions asess ON ar.session_id = asess.id
-      JOIN auth_users au ON ar.student_id = au.auth_user_id
       WHERE asess.batch_id = $1 AND asess.faculty_id = $2
-      GROUP BY au.auth_user_id, au.full_name, au.email, au.roll_number
-      ORDER BY au.roll_number, au.full_name`,
-      [batchId, userId],
+      GROUP BY ar.student_id`,
+      [parsedBatchId, userId],
+    );
+    const summaryByStudentId = new Map(
+      summaryResult.rows.map((row) => [Number(row.student_id), row]),
     );
 
-    res.json(result.rows);
+    res.json(
+      studentRows.map((student) => {
+        const summary = summaryByStudentId.get(Number(student.student_id));
+        return {
+          student_id: String(student.student_id),
+          full_name: student.full_name,
+          email: student.email,
+          roll_number: student.roll_number,
+          attendance_count: Number(summary?.attendance_count ?? 0),
+          present_count: Number(summary?.present_count ?? 0),
+          attendance_percentage: Number(summary?.attendance_percentage ?? 0),
+        };
+      }),
+    );
   } catch (error) {
     console.error("Error fetching class students:", error);
     res.status(500).json({ error: "Failed to fetch class students" });
@@ -787,13 +1049,14 @@ export const getClassStudents = async (req: Request, res: Response) => {
 // Get scheduled classes for student
 export const getStudentSchedule = async (req: Request, res: Response) => {
   try {
+    await ensureAttendanceTables();
     const { userId } = (req as any).user;
     const today = new Date().toISOString().split("T")[0];
 
     const batchId = await getStudentBatchId(userId);
 
     if (batchId === null) {
-      return res.json(getMockStudentSchedule());
+      return res.json(getEmptyStudentSchedule());
     }
 
     let todayClasses;
@@ -833,7 +1096,7 @@ export const getStudentSchedule = async (req: Request, res: Response) => {
       );
     } catch (error) {
       if (isUndefinedTableError(error)) {
-        return res.json(getMockStudentSchedule());
+        return res.json(getEmptyStudentSchedule());
       }
 
       throw error;
@@ -848,4 +1111,3 @@ export const getStudentSchedule = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Failed to fetch schedule" });
   }
 };
-

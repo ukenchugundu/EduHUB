@@ -27,20 +27,6 @@ import { readStoredAuth } from "@/lib/authSession";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
-// Helper to get auth token
-const getAuthToken = (): string | null => {
-  try {
-    const authData = localStorage.getItem("eduhub_auth");
-    if (authData) {
-      const parsed = JSON.parse(authData);
-      return parsed.token || null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-};
-
 const StudentHistory = () => {
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,14 +36,19 @@ const StudentHistory = () => {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   const auth = useMemo(() => readStoredAuth(), []);
-  const studentId = auth?.studentId || "student-demo";
+  const studentId = auth?.studentId || auth?.rollNumber || "";
 
   useEffect(() => {
+    if (!studentId) {
+      setHistory([]);
+      setLoading(false);
+      return;
+    }
     fetchHistory();
   }, [studentId]);
 
   const fetchHistory = async () => {
-    const token = getAuthToken();
+    const token = auth?.token?.trim();
     try {
       const response = await fetch(`${API_BASE}/api/student/history/${studentId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},

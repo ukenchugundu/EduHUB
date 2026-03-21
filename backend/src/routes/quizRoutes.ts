@@ -6,6 +6,7 @@ import {
   getQuizAttempt,
   getQuizById,
   getQuizzes,
+  getSubjects,
   getStudentResults,
   saveQuizAttemptAnswers,
   startQuizAttempt,
@@ -52,6 +53,7 @@ import {
 
 const router = Router();
 
+router.get("/subjects", getSubjects);
 router.get("/quizzes", getQuizzes);
 router.get("/quizzes/:id", getQuizById);
 router.post("/quizzes", createQuiz);

@@ -1,6 +1,18 @@
+// cspell:ignore fillblank truefalse TIMESTAMPTZ
+import jwt from "jsonwebtoken";
 import { Request, Response } from "express";
 import { Pool, PoolClient } from "pg";
 import pool from "../utils/db";
+import {
+  facultyHasClassAccess,
+  facultyHasClassAccessInMemory,
+  getFacultyClassAllocations,
+  getInMemoryFacultyClassAllocations,
+} from "../utils/facultyClassAccess";
+import {
+  getAcademicTableNames,
+  getStudentBatchIdForAuthUser,
+} from "../utils/studentPortalAccess";
 
 type QuizStatus = "Draft" | "Published" | "Completed";
 type QuestionType = "mcq" | "fill_blank" | "true_false";
@@ -23,6 +35,7 @@ interface NormalizedQuizPayload {
   cls: string;
   title: string;
   duration: string;
+  batchId?: number | null;
   questions: NormalizedQuizQuestion[];
 }
 
@@ -42,6 +55,7 @@ interface InMemoryQuestion {
 
 interface InMemoryQuiz {
   quiz_id: number;
+  batch_id: number | null;
   cls: string;
   title: string;
   duration: string;
@@ -135,6 +149,7 @@ const normalizeFreeTextForComparison = (value: string): string =>
 
 const dbConnectionErrorCodes = new Set([
   "28P01",
+  "42P01", // missing table/relation
   "ECONNREFUSED",
   "ENOTFOUND",
   "EHOSTUNREACH",
@@ -176,8 +191,662 @@ const isDatabaseConnectionError = (error: unknown): boolean => {
     message.includes("connection terminated unexpectedly") ||
     message.includes("timeout expired") ||
     message.includes("connect econnrefused") ||
-    (message.includes("database") && message.includes("does not exist"))
+    (message.includes("database") && message.includes("does not exist")) ||
+    (message.includes("relation") && message.includes("does not exist")) ||
+    (message.includes("table") && message.includes("does not exist"))
   );
+};
+
+const getAuthUserFromRequest = (
+  req: Request,
+): { userId: number; role: string } | null => {
+  const authHeader = req.headers["authorization"] as string | undefined;
+  const token = authHeader?.split(" ")[1];
+  if (!token) {
+    return null;
+  }
+
+  try {
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET || "fallback-secret",
+    );
+
+    if (typeof decoded === "object" && decoded !== null) {
+      const userId = Number((decoded as any).userId);
+      const role = String((decoded as any).role ?? "");
+      if (Number.isInteger(userId) && userId > 0 && role) {
+        return { userId, role };
+      }
+    }
+  } catch {
+    // ignore invalid token
+  }
+
+  return null;
+};
+
+const buildFacultyAllowedClassSet = (
+  allocations: Array<{ className: string }>,
+): Set<string> =>
+  new Set(
+    allocations
+      .map((allocation) => normalizeClassName(allocation.className))
+      .filter(Boolean),
+  );
+
+const requireFacultyContentAccess = (
+  req: Request,
+  res: Response,
+): { userId: number; role: string } | null => {
+  const authUser = getAuthUserFromRequest(req);
+  if (!authUser || (authUser.role !== "faculty" && authUser.role !== "admin")) {
+    res.status(401).json({
+      error: "Faculty or admin authentication is required for this action.",
+    });
+    return null;
+  }
+  return authUser;
+};
+
+const getStudentBatchId = async (
+  db: Pool | PoolClient,
+  userId?: number,
+): Promise<number | null> => {
+  return getStudentBatchIdForAuthUser(db, userId);
+};
+
+const getBatchNameById = async (
+  db: Pool | PoolClient,
+  batchId: number,
+): Promise<string | null> => {
+  const { batchTableName } = await getAcademicTableNames(db);
+  if (!batchTableName) {
+    return null;
+  }
+
+  try {
+    const result = await db.query<{ name: string }>(
+      `SELECT name FROM ${batchTableName} WHERE id = $1 LIMIT 1`,
+      [batchId],
+    );
+    const batchName = result.rows[0]?.name;
+    return typeof batchName === "string" && batchName.trim()
+      ? batchName.trim()
+      : null;
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "42P01"
+    ) {
+      return null;
+    }
+    throw error;
+  }
+};
+
+const normalizeClassName = (value: unknown): string =>
+  String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const normalizeLookupToken = (value: unknown): string =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const compactLookupToken = (value: unknown): string =>
+  normalizeLookupToken(value).replace(/\s+/g, "");
+
+const normalizeUpperText = (value: unknown, maxLength = 255): string =>
+  String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, maxLength)
+    .toUpperCase();
+
+const extractAcademicYearNumber = (value: unknown): number | null => {
+  const normalized = normalizeUpperText(value, 80);
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized.startsWith("1") ||
+    normalized.startsWith("I ") ||
+    normalized === "I" ||
+    normalized.includes("1ST")
+  ) {
+    return 1;
+  }
+  if (
+    normalized.startsWith("2") ||
+    normalized.startsWith("II ") ||
+    normalized === "II" ||
+    normalized.includes("2ND")
+  ) {
+    return 2;
+  }
+  if (
+    normalized.startsWith("3") ||
+    normalized.startsWith("III ") ||
+    normalized === "III" ||
+    normalized.includes("3RD")
+  ) {
+    return 3;
+  }
+  if (
+    normalized.startsWith("4") ||
+    normalized.startsWith("IV ") ||
+    normalized === "IV" ||
+    normalized.includes("4TH")
+  ) {
+    return 4;
+  }
+
+  const digitMatch = normalized.match(/\b([1-4])\b/);
+  return digitMatch?.[1] ? Number(digitMatch[1]) : null;
+};
+
+const toRomanAcademicYear = (value: number | null): string => {
+  switch (value) {
+    case 1:
+      return "I";
+    case 2:
+      return "II";
+    case 3:
+      return "III";
+    case 4:
+      return "IV";
+    default:
+      return "";
+  }
+};
+
+const toOrdinalAcademicYear = (value: number | null): string => {
+  switch (value) {
+    case 1:
+      return "1st yr";
+    case 2:
+      return "2nd yr";
+    case 3:
+      return "3rd yr";
+    case 4:
+      return "4th yr";
+    default:
+      return "";
+  }
+};
+
+const extractSectionValue = (value: unknown): string => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const explicitMatch = normalized.match(/section\s+([a-z0-9]+)/i);
+  if (explicitMatch?.[1]) {
+    return explicitMatch[1].toUpperCase();
+  }
+
+  const dashMatch = normalized.match(/-([a-z0-9]+)\s*$/i);
+  if (dashMatch?.[1]) {
+    return dashMatch[1].toUpperCase();
+  }
+
+  const trailingMatch = normalized.match(/\b([a-z])\b\s*$/i);
+  if (trailingMatch?.[1]) {
+    return trailingMatch[1].toUpperCase();
+  }
+
+  return "";
+};
+
+type QuizBatchCatalogEntry = {
+  id: number;
+  name: string;
+  departmentCode: string;
+  departmentName: string;
+  academicYear: string;
+  yearNumber: number | null;
+  section: string;
+  aliases: Set<string>;
+};
+
+type ResolvedQuizBatchTarget = {
+  batchId: number | null;
+  className: string;
+};
+
+const buildDepartmentAliasTokens = (
+  departmentCode: string,
+  departmentName: string,
+): Set<string> => {
+  const aliases = new Set<string>();
+  const addAlias = (value: string) => {
+    const normalized = normalizeLookupToken(value);
+    const compact = compactLookupToken(value);
+    if (normalized) {
+      aliases.add(normalized);
+    }
+    if (compact) {
+      aliases.add(compact);
+    }
+  };
+
+  addAlias(departmentCode);
+  addAlias(departmentName);
+
+  const nameWords = normalizeLookupToken(departmentName)
+    .split(" ")
+    .map((word) => word.trim())
+    .filter(Boolean);
+  const significantWords = nameWords.filter(
+    (word) => !["and", "of", "the", "for"].includes(word),
+  );
+
+  if (significantWords.length > 0) {
+    addAlias(significantWords.join(" "));
+    addAlias(significantWords.map((word) => word[0]).join(""));
+  }
+
+  return aliases;
+};
+
+const buildBatchAliasSet = (entry: {
+  name: string;
+  departmentCode: string;
+  departmentName: string;
+  yearNumber: number | null;
+  section: string;
+}): Set<string> => {
+  const aliases = new Set<string>();
+  const addAlias = (value: string) => {
+    const normalized = normalizeLookupToken(value);
+    if (normalized) {
+      aliases.add(normalized);
+    }
+    const compact = compactLookupToken(value);
+    if (compact) {
+      aliases.add(compact);
+    }
+  };
+
+  addAlias(entry.name);
+
+  const departmentLabels = Array.from(
+    buildDepartmentAliasTokens(entry.departmentCode, entry.departmentName),
+  );
+  const romanYear = toRomanAcademicYear(entry.yearNumber);
+  const ordinalYear = toOrdinalAcademicYear(entry.yearNumber);
+  const section = entry.section;
+
+  for (const departmentLabel of departmentLabels) {
+    if (romanYear) {
+      addAlias(section ? `${romanYear} ${departmentLabel}-${section}` : `${romanYear} ${departmentLabel}`);
+      addAlias(section ? `${romanYear} ${departmentLabel} ${section}` : `${romanYear} ${departmentLabel}`);
+    }
+
+    if (ordinalYear) {
+      addAlias(section ? `${ordinalYear} ${departmentLabel} - Section ${section}` : `${ordinalYear} ${departmentLabel}`);
+      addAlias(section ? `${ordinalYear} ${departmentLabel} Section ${section}` : `${ordinalYear} ${departmentLabel}`);
+      addAlias(
+        section
+          ? `${ordinalYear.replace("yr", "year")} ${departmentLabel} - Section ${section}`
+          : `${ordinalYear.replace("yr", "year")} ${departmentLabel}`,
+      );
+      addAlias(
+        section
+          ? `${ordinalYear.replace("yr", "year")} ${departmentLabel} Section ${section}`
+          : `${ordinalYear.replace("yr", "year")} ${departmentLabel}`,
+      );
+    }
+  }
+
+  return aliases;
+};
+
+async function loadQuizBatchCatalog(
+  db: Pool | PoolClient,
+): Promise<QuizBatchCatalogEntry[]> {
+  const { batchTableName, departmentTableName } = await getAcademicTableNames(db);
+  if (!batchTableName) {
+    return [];
+  }
+
+  const hasDepartmentIdColumn = await columnExists(db, batchTableName, "department_id");
+  const canJoinDepartment = Boolean(departmentTableName && hasDepartmentIdColumn);
+  const result = await db.query<{
+    id: number;
+    name: string | null;
+    academic_year: string | null;
+    department_code: string | null;
+    department_name: string | null;
+  }>(
+    `
+      SELECT
+        b.id,
+        COALESCE(b.name, '') AS name,
+        COALESCE(b.academic_year, '') AS academic_year,
+        ${
+          canJoinDepartment
+            ? "COALESCE(d.code, '')"
+            : "''"
+        } AS department_code,
+        ${
+          canJoinDepartment
+            ? "COALESCE(d.name, '')"
+            : "''"
+        } AS department_name
+      FROM ${batchTableName} b
+      ${
+        canJoinDepartment
+          ? `LEFT JOIN ${departmentTableName} d ON d.id = b.department_id`
+          : ""
+      }
+      ORDER BY b.id ASC
+    `,
+  );
+
+  return result.rows
+    .map((row) => {
+      const name = String(row.name ?? "").trim();
+      const departmentCode = normalizeUpperText(row.department_code, 50);
+      const departmentName = String(row.department_name ?? "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 120);
+      const section = extractSectionValue(name);
+      const yearNumber = extractAcademicYearNumber(name);
+
+      return {
+        id: Number(row.id),
+        name,
+        departmentCode,
+        departmentName,
+        academicYear: String(row.academic_year ?? "").trim(),
+        yearNumber,
+        section,
+        aliases: buildBatchAliasSet({
+          name,
+          departmentCode,
+          departmentName,
+          yearNumber,
+          section,
+        }),
+      } satisfies QuizBatchCatalogEntry;
+    })
+    .filter((entry) => Number.isInteger(entry.id) && entry.id > 0 && entry.name);
+}
+
+const rankQuizBatchMatch = (
+  normalizedClassName: string,
+  yearNumber: number | null,
+  section: string,
+  batch: QuizBatchCatalogEntry,
+): number => {
+  if (!normalizedClassName) {
+    return 0;
+  }
+
+  const compactClassName = normalizedClassName.replace(/\s+/g, "");
+
+  if (batch.aliases.has(normalizedClassName)) {
+    return 100;
+  }
+  if (batch.aliases.has(compactClassName)) {
+    return 100;
+  }
+
+  const matchesYear = yearNumber !== null && batch.yearNumber === yearNumber;
+  const matchesSection = Boolean(section) && batch.section === section;
+  const departmentTokens = buildDepartmentAliasTokens(
+    batch.departmentCode,
+    batch.departmentName,
+  );
+  const batchNameToken = normalizeLookupToken(batch.name);
+  const compactBatchNameToken = compactLookupToken(batch.name);
+  const matchesDepartment = Boolean(
+    Array.from(departmentTokens).some(
+      (token) =>
+        token &&
+        (normalizedClassName.includes(token) || compactClassName.includes(token)),
+    ) ||
+      (batchNameToken && normalizedClassName.includes(batchNameToken)) ||
+      (compactBatchNameToken && compactClassName.includes(compactBatchNameToken)),
+  );
+
+  if (matchesYear && matchesSection && matchesDepartment) {
+    return 90;
+  }
+  if (matchesYear && matchesDepartment) {
+    return 70;
+  }
+  if (matchesSection && matchesDepartment) {
+    return 60;
+  }
+  if (matchesYear && matchesSection) {
+    return 50;
+  }
+  if (matchesDepartment) {
+    return 20;
+  }
+
+  return 0;
+};
+
+function resolveQuizBatchTargetFromCatalog(
+  className: string,
+  batchId: number | null | undefined,
+  batchCatalog: QuizBatchCatalogEntry[],
+): ResolvedQuizBatchTarget {
+  const parsedBatchId =
+    Number.isInteger(Number(batchId)) && Number(batchId) > 0
+      ? Number(batchId)
+      : null;
+  if (parsedBatchId) {
+    const directBatch = batchCatalog.find((entry) => entry.id === parsedBatchId);
+    if (directBatch) {
+      return {
+        batchId: directBatch.id,
+        className: directBatch.name,
+      };
+    }
+  }
+
+  const normalizedClassName = normalizeLookupToken(className);
+  if (!normalizedClassName) {
+    return {
+      batchId: parsedBatchId,
+      className: String(className ?? "").trim(),
+    };
+  }
+
+  const yearNumber = extractAcademicYearNumber(className);
+  const section = extractSectionValue(className);
+  let bestMatch: QuizBatchCatalogEntry | null = null;
+  let bestScore = 0;
+  let competingBestMatchCount = 0;
+
+  for (const batch of batchCatalog) {
+    const score = rankQuizBatchMatch(
+      normalizedClassName,
+      yearNumber,
+      section,
+      batch,
+    );
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = batch;
+      competingBestMatchCount = 1;
+      continue;
+    }
+    if (score > 0 && score === bestScore) {
+      competingBestMatchCount += 1;
+    }
+  }
+
+  if (bestMatch && bestScore >= 60 && competingBestMatchCount === 1) {
+    return {
+      batchId: bestMatch.id,
+      className: bestMatch.name,
+    };
+  }
+
+  return {
+    batchId: parsedBatchId,
+    className: String(className ?? "").trim(),
+  };
+}
+
+async function resolveQuizBatchTarget(
+  db: Pool | PoolClient,
+  className: string,
+  batchId: number | null | undefined,
+  batchCatalog?: QuizBatchCatalogEntry[],
+): Promise<ResolvedQuizBatchTarget> {
+  const catalog = batchCatalog ?? (await loadQuizBatchCatalog(db));
+  return resolveQuizBatchTargetFromCatalog(className, batchId, catalog);
+}
+
+async function synchronizeQuizBatchRecord(
+  db: Pool | PoolClient,
+  idColumn: "quiz_id" | "id",
+  quiz: Record<string, unknown>,
+  batchCatalog?: QuizBatchCatalogEntry[],
+): Promise<void> {
+  const quizId = Number(quiz.quiz_id ?? quiz.id ?? 0);
+  if (!Number.isInteger(quizId) || quizId <= 0) {
+    return;
+  }
+
+  const resolved = await resolveQuizBatchTarget(
+    db,
+    String(quiz.cls ?? ""),
+    Number(quiz.batch_id ?? 0) || null,
+    batchCatalog,
+  );
+
+  const currentClassName = String(quiz.cls ?? "").trim();
+  const currentBatchId = Number(quiz.batch_id ?? 0) || null;
+  if (
+    currentClassName === resolved.className &&
+    currentBatchId === resolved.batchId
+  ) {
+    return;
+  }
+
+  await db.query(
+    `UPDATE quizzes SET cls = $1, batch_id = $2 WHERE ${idColumn} = $3`,
+    [resolved.className, resolved.batchId, quizId],
+  );
+  quiz.cls = resolved.className;
+  quiz.batch_id = resolved.batchId;
+}
+
+export const repairStoredQuizBatchMappings = async (
+  db: Pool | PoolClient,
+): Promise<number> => {
+  const idColumn = await resolveQuizIdColumn(db);
+  const result = await db.query(
+    `SELECT ${idColumn} AS quiz_id, cls, batch_id FROM quizzes ORDER BY ${idColumn} ASC`,
+  );
+  const batchCatalog = await loadQuizBatchCatalog(db);
+  let repairedCount = 0;
+
+  for (const quiz of result.rows) {
+    const currentClassName = String(quiz.cls ?? "").trim();
+    const currentBatchId = Number(quiz.batch_id ?? 0) || null;
+    const resolved = resolveQuizBatchTargetFromCatalog(
+      currentClassName,
+      currentBatchId,
+      batchCatalog,
+    );
+
+    if (
+      currentClassName === resolved.className &&
+      currentBatchId === resolved.batchId
+    ) {
+      continue;
+    }
+
+    await db.query(
+      `UPDATE quizzes SET cls = $1, batch_id = $2 WHERE ${idColumn} = $3`,
+      [resolved.className, resolved.batchId, Number(quiz.quiz_id)],
+    );
+    repairedCount += 1;
+  }
+
+  return repairedCount;
+};
+
+const isStudentVisibleQuiz = (
+  quiz: Record<string, unknown>,
+  studentBatchId: number,
+  studentBatchName: string | null,
+): boolean => {
+  const normalizedStatus = String(quiz.status ?? "").trim().toLowerCase();
+  if (
+    normalizedStatus !== "published" &&
+    normalizedStatus !== "completed" &&
+    normalizedStatus !== "live"
+  ) {
+    return false;
+  }
+
+  const quizBatchId = Number(quiz.batch_id ?? 0);
+  if (Number.isInteger(quizBatchId) && quizBatchId > 0) {
+    return quizBatchId === studentBatchId;
+  }
+
+  if (studentBatchName) {
+    return normalizeClassName(quiz.cls) === normalizeClassName(studentBatchName);
+  }
+
+  return false;
+};
+
+const filterQuizzesForStudent = async (
+  db: Pool | PoolClient,
+  quizzes: Record<string, unknown>[],
+  userId: number,
+): Promise<Record<string, unknown>[]> => {
+  const studentBatchId = await getStudentBatchId(db, userId);
+  if (studentBatchId === null) {
+    return [];
+  }
+
+  const studentBatchName = await getBatchNameById(db, studentBatchId);
+  return quizzes.filter((quiz) =>
+    isStudentVisibleQuiz(quiz, studentBatchId, studentBatchName),
+  );
+};
+
+const ensureStudentCanAccessQuiz = async (
+  req: Request,
+  res: Response,
+  db: Pool | PoolClient,
+  quiz: Record<string, unknown>,
+): Promise<boolean> => {
+  const authUser = getAuthUserFromRequest(req);
+  if (!authUser || authUser.role !== "student") {
+    return true;
+  }
+
+  const visibleQuizzes = await filterQuizzesForStudent(db, [quiz], authUser.userId);
+  if (visibleQuizzes.length > 0) {
+    return true;
+  }
+
+  res.status(404).json({ error: "Quiz not found" });
+  return false;
 };
 
 const columnExists = async (
@@ -201,9 +870,50 @@ const columnExists = async (
   return Boolean(result.rows[0]?.exists);
 };
 
+const ensureQuizzesTable = async (db: Pool | PoolClient): Promise<void> => {
+  await db.query(
+    `
+      CREATE TABLE IF NOT EXISTS quizzes (
+        id SERIAL PRIMARY KEY,
+        cls VARCHAR(255) NOT NULL DEFAULT '',
+        title VARCHAR(255) NOT NULL DEFAULT '',
+        questions INTEGER NOT NULL DEFAULT 0,
+        duration VARCHAR(255) NOT NULL DEFAULT '',
+        status VARCHAR(50) NOT NULL DEFAULT 'Draft',
+        batch_id INT NULL
+      )
+    `,
+  );
+
+  // Ensure required columns exist on older schemas
+  await db.query(
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS cls VARCHAR(255) NOT NULL DEFAULT ''",
+  );
+  await db.query(
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS title VARCHAR(255) NOT NULL DEFAULT ''",
+  );
+  await db.query(
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS questions INTEGER NOT NULL DEFAULT 0",
+  );
+  await db.query(
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS duration VARCHAR(255) NOT NULL DEFAULT ''",
+  );
+  await db.query(
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'Draft'",
+  );
+  await db.query(
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS batch_id INT NULL",
+  );
+  await db.query(
+    "CREATE INDEX IF NOT EXISTS idx_quizzes_batch_id ON quizzes(batch_id)",
+  );
+};
+
 const resolveQuizIdColumn = async (
   db: Pool | PoolClient,
 ): Promise<"quiz_id" | "id"> => {
+  await ensureQuizzesTable(db);
+
   if (await columnExists(db, "quizzes", "quiz_id")) {
     return "quiz_id";
   }
@@ -219,6 +929,8 @@ const ensureQuizQuestionTables = async (
   db: Pool | PoolClient,
   quizIdColumn: "quiz_id" | "id",
 ): Promise<void> => {
+  await ensureQuizzesTable(db);
+
   await db.query(`
     CREATE TABLE IF NOT EXISTS questions (
       question_id SERIAL PRIMARY KEY,
@@ -321,10 +1033,16 @@ const normalizeQuizPayload = (
           title?: unknown;
           duration?: unknown;
           questions?: unknown;
+          batchId?: unknown;
         })
       : {};
 
-  const { cls, title, duration, questions: rawQuestions } = rawBody;
+  const { cls, title, duration, questions: rawQuestions, batchId: rawBatchId } = rawBody;
+  const batchId =
+    typeof rawBatchId === "number" && Number.isInteger(rawBatchId) && rawBatchId > 0
+      ? rawBatchId
+      : null;
+
   if (
     typeof cls !== "string" ||
     !cls.trim() ||
@@ -396,6 +1114,7 @@ const normalizeQuizPayload = (
       cls: cls.trim(),
       title: title.trim(),
       duration: duration.trim(),
+      batchId,
       questions,
     },
   };
@@ -442,6 +1161,7 @@ const createInMemoryQuiz = (
 ): InMemoryQuiz => {
   const quiz: InMemoryQuiz = {
     quiz_id: inMemoryQuizId++,
+    batch_id: payload.batchId ?? null,
     cls: payload.cls,
     title: payload.title,
     duration: payload.duration,
@@ -477,6 +1197,7 @@ const loadQuizWithRelations = async (
 
   const normalizedQuizId = quiz.quiz_id ?? quiz.id;
   quiz.quiz_id = normalizedQuizId;
+  await synchronizeQuizBatchRecord(db, idColumn, quiz);
 
   const questionsResult = await db.query(
     "SELECT * FROM questions WHERE quiz_id = $1 ORDER BY question_id ASC",
@@ -504,10 +1225,12 @@ const loadAllQuizzesWithRelations = async (
     `SELECT * FROM quizzes ORDER BY ${idColumn} DESC`,
   );
   const quizzes = quizzesResult.rows;
+  const batchCatalog = await loadQuizBatchCatalog(db);
 
   for (const quiz of quizzes) {
     const normalizedQuizId = quiz.quiz_id ?? quiz.id;
     quiz.quiz_id = normalizedQuizId;
+    await synchronizeQuizBatchRecord(db, idColumn, quiz, batchCatalog);
 
     const questionsResult = await db.query(
       "SELECT * FROM questions WHERE quiz_id = $1 ORDER BY question_id ASC",
@@ -591,22 +1314,85 @@ const createSampleQuizInDatabase = async (
   return loadQuizWithRelations(db, quizIdColumn, quizId);
 };
 
+const DEFAULT_SUBJECTS = [
+  { id: 1, name: "Data Structures & Algorithms", code: "DSA" },
+  { id: 2, name: "Database Management Systems", code: "DBMS" },
+  { id: 3, name: "Operating Systems", code: "OS" },
+  { id: 4, name: "Computer Networks", code: "CN" },
+  { id: 5, name: "Software Engineering", code: "SE" },
+  { id: 6, name: "Machine Learning", code: "ML" },
+  { id: 7, name: "Artificial Intelligence", code: "AI" },
+  { id: 8, name: "Web Technologies", code: "WT" },
+  { id: 9, name: "Cloud Computing", code: "CC" },
+  { id: 10, name: "Cybersecurity", code: "CS" },
+] as const;
+
+export const getSubjects = async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `
+        SELECT id, code, name, department_id, faculty_id
+        FROM subject 
+        ORDER BY name ASC
+      `
+    );
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    if (rows.length === 0) {
+      res.json([...DEFAULT_SUBJECTS]);
+      return;
+    }
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching subjects:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
 export const getQuizzes = async (req: Request, res: Response) => {
+  const authUser = getAuthUserFromRequest(req);
+
   try {
     const quizIdColumn = await resolveQuizIdColumn(pool);
     await ensureQuizQuestionTables(pool, quizIdColumn);
     let quizzes = await loadAllQuizzesWithRelations(pool, quizIdColumn);
-    if (quizzes.length === 0) {
-      await createSampleQuizInDatabase(pool, quizIdColumn);
-      quizzes = await loadAllQuizzesWithRelations(pool, quizIdColumn);
+
+    if (authUser?.role === "student") {
+      quizzes = await filterQuizzesForStudent(pool, quizzes, authUser.userId);
+    } else if (authUser?.role === "faculty") {
+      const allocations = await getFacultyClassAllocations(pool, authUser.userId);
+      const allowedClassNames = buildFacultyAllowedClassSet(allocations);
+      const allowedBatchIds = new Set(
+        allocations
+          .map((allocation) => Number(allocation.batchId ?? 0))
+          .filter((batchId) => Number.isInteger(batchId) && batchId > 0),
+      );
+      quizzes = quizzes.filter((quiz) => {
+        const quizBatchId = Number(quiz.batch_id ?? 0);
+        if (Number.isInteger(quizBatchId) && quizBatchId > 0) {
+          return allowedBatchIds.has(quizBatchId);
+        }
+
+        return allowedClassNames.has(normalizeClassName(String(quiz.cls ?? "")));
+      });
     }
+
     res.json(quizzes);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      console.warn(
-        "Database unavailable while fetching quizzes. Returning in-memory quizzes.",
-      );
-      ensureSampleQuizInMemory();
+      console.warn("Database unavailable while fetching quizzes.");
+      if (authUser?.role === "student") {
+        return res.json([]);
+      }
+      if (authUser?.role === "faculty") {
+        const allowedClassNames = buildFacultyAllowedClassSet(
+          getInMemoryFacultyClassAllocations(authUser.userId),
+        );
+        return res.json(
+          inMemoryQuizzes.filter((quiz) =>
+            allowedClassNames.has(normalizeClassName(quiz.cls)),
+          ),
+        );
+      }
       return res.json(inMemoryQuizzes);
     }
 
@@ -620,6 +1406,7 @@ export const getQuizById = async (req: Request, res: Response) => {
   if (!quizId) {
     return;
   }
+  const authUser = getAuthUserFromRequest(req);
 
   try {
     const quizIdColumn = await resolveQuizIdColumn(pool);
@@ -629,11 +1416,39 @@ export const getQuizById = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Quiz not found" });
     }
 
+    if (!(await ensureStudentCanAccessQuiz(req, res, pool, quiz))) {
+      return;
+    }
+    if (
+      authUser?.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(quiz.cls ?? ""),
+        Number(quiz.batch_id ?? 0) || null,
+      ))
+    ) {
+      return res.status(404).json({ error: "Quiz not found" });
+    }
+
     res.json(quiz);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
+      if (getAuthUserFromRequest(req)?.role === "student") {
+        return res.status(404).json({ error: "Quiz not found" });
+      }
       const quiz = inMemoryQuizzes.find((item) => item.quiz_id === quizId);
       if (!quiz) {
+        return res.status(404).json({ error: "Quiz not found" });
+      }
+      if (
+        authUser?.role === "faculty" &&
+        !facultyHasClassAccessInMemory(
+          authUser.userId,
+          quiz.cls,
+          quiz.batch_id ?? null,
+        )
+      ) {
         return res.status(404).json({ error: "Quiz not found" });
       }
       return res.json(quiz);
@@ -645,6 +1460,11 @@ export const getQuizById = async (req: Request, res: Response) => {
 };
 
 export const createQuiz = async (req: Request, res: Response) => {
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   const normalized = normalizeQuizPayload(req.body);
   if (normalized.error || !normalized.payload) {
     return res
@@ -653,11 +1473,37 @@ export const createQuiz = async (req: Request, res: Response) => {
   }
 
   const payload = normalized.payload;
+  let resolvedPayload = payload;
   let client: PoolClient | null = null;
   let transactionStarted = false;
 
   try {
     client = await pool.connect();
+    const resolvedTarget = await resolveQuizBatchTarget(
+      client,
+      payload.cls,
+      payload.batchId ?? null,
+    );
+    resolvedPayload = {
+      ...payload,
+      cls: resolvedTarget.className,
+      batchId: resolvedTarget.batchId,
+    };
+
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        client,
+        authUser.userId,
+        resolvedPayload.cls,
+        resolvedPayload.batchId ?? null,
+      ))
+    ) {
+      return res.status(403).json({
+        error:
+          "You do not have access to create quizzes for this class. Ask admin to allocate it first.",
+      });
+    }
     const quizIdColumn = await resolveQuizIdColumn(client);
     await ensureQuizQuestionTables(client, quizIdColumn);
 
@@ -672,24 +1518,31 @@ export const createQuiz = async (req: Request, res: Response) => {
     const status: QuizStatus = "Draft";
 
     const quizResult = hasQuestionsColumn
-      ? await client.query(
-          "INSERT INTO quizzes (cls, title, questions, duration, status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+        ? await client.query(
+          "INSERT INTO quizzes (cls, title, questions, duration, status, batch_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
           [
-            payload.cls,
-            payload.title,
-            payload.questions.length,
-            payload.duration,
+            resolvedPayload.cls,
+            resolvedPayload.title,
+            resolvedPayload.questions.length,
+            resolvedPayload.duration,
             status,
+            resolvedPayload.batchId,
           ],
         )
       : await client.query(
-          "INSERT INTO quizzes (cls, title, duration, status) VALUES ($1, $2, $3, $4) RETURNING *",
-          [payload.cls, payload.title, payload.duration, status],
+          "INSERT INTO quizzes (cls, title, duration, status, batch_id) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+          [
+            resolvedPayload.cls,
+            resolvedPayload.title,
+            resolvedPayload.duration,
+            status,
+            resolvedPayload.batchId,
+          ],
         );
 
     const createdQuiz = quizResult.rows[0];
     const quizId = createdQuiz.quiz_id ?? createdQuiz.id;
-    await insertQuizQuestions(client, quizId, payload.questions);
+    await insertQuizQuestions(client, quizId, resolvedPayload.questions);
 
     await client.query("COMMIT");
     const quiz = await loadQuizWithRelations(client, quizIdColumn, quizId);
@@ -702,7 +1555,24 @@ export const createQuiz = async (req: Request, res: Response) => {
     }
 
     if (isDatabaseConnectionError(error)) {
-      const quiz = createInMemoryQuiz(payload, "Draft");
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(
+          authUser.userId,
+          resolvedPayload.cls,
+          resolvedPayload.batchId ?? null,
+        )
+      ) {
+        return res.status(403).json({
+          error:
+            "You do not have access to create quizzes for this class. Ask admin to allocate it first.",
+        });
+      }
+
+      const quiz = createInMemoryQuiz(
+        resolvedPayload,
+        "Draft",
+      );
       console.warn(
         "Database unavailable while creating quiz. Saved quiz in in-memory store.",
       );
@@ -724,6 +1594,11 @@ export const updateQuiz = async (req: Request, res: Response) => {
     return;
   }
 
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   const normalized = normalizeQuizPayload(req.body);
   if (normalized.error || !normalized.payload) {
     return res
@@ -732,6 +1607,7 @@ export const updateQuiz = async (req: Request, res: Response) => {
   }
 
   const payload = normalized.payload;
+  let resolvedPayload = payload;
   let client: PoolClient | null = null;
   let transactionStarted = false;
 
@@ -740,6 +1616,41 @@ export const updateQuiz = async (req: Request, res: Response) => {
     const quizIdColumn = await resolveQuizIdColumn(client);
     await ensureQuizQuestionTables(client, quizIdColumn);
     await ensureQuizAttemptTables(client, quizIdColumn);
+
+    const resolvedTarget = await resolveQuizBatchTarget(
+      client,
+      payload.cls,
+      payload.batchId ?? null,
+    );
+    resolvedPayload = {
+      ...payload,
+      cls: resolvedTarget.className,
+      batchId: resolvedTarget.batchId,
+    };
+
+    const existingQuiz = await loadQuizWithRelations(client, quizIdColumn, quizId);
+    if (!existingQuiz) {
+      return res.status(404).json({ error: "Quiz not found" });
+    }
+    if (
+      authUser.role === "faculty" &&
+      (!(await facultyHasClassAccess(
+        client,
+        authUser.userId,
+        String(existingQuiz.cls ?? ""),
+        Number(existingQuiz.batch_id ?? 0) || null,
+      )) ||
+        !(await facultyHasClassAccess(
+        client,
+        authUser.userId,
+        resolvedPayload.cls,
+        resolvedPayload.batchId ?? null,
+      )))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to update quizzes for this class.",
+      });
+    }
 
     await client.query("BEGIN");
     transactionStarted = true;
@@ -751,18 +1662,25 @@ export const updateQuiz = async (req: Request, res: Response) => {
     );
     const updateResult = hasQuestionsColumn
       ? await client.query(
-          `UPDATE quizzes SET cls = $1, title = $2, duration = $3, questions = $4 WHERE ${quizIdColumn} = $5 RETURNING *`,
+          `UPDATE quizzes SET cls = $1, title = $2, duration = $3, questions = $4, batch_id = $5 WHERE ${quizIdColumn} = $6 RETURNING *`,
           [
-            payload.cls,
-            payload.title,
-            payload.duration,
-            payload.questions.length,
+            resolvedPayload.cls,
+            resolvedPayload.title,
+            resolvedPayload.duration,
+            resolvedPayload.questions.length,
+            resolvedPayload.batchId,
             quizId,
           ],
         )
       : await client.query(
-          `UPDATE quizzes SET cls = $1, title = $2, duration = $3 WHERE ${quizIdColumn} = $4 RETURNING *`,
-          [payload.cls, payload.title, payload.duration, quizId],
+          `UPDATE quizzes SET cls = $1, title = $2, duration = $3, batch_id = $4 WHERE ${quizIdColumn} = $5 RETURNING *`,
+          [
+            resolvedPayload.cls,
+            resolvedPayload.title,
+            resolvedPayload.duration,
+            resolvedPayload.batchId,
+            quizId,
+          ],
         );
 
     if (!updateResult.rowCount) {
@@ -780,7 +1698,7 @@ export const updateQuiz = async (req: Request, res: Response) => {
     );
 
     await client.query("DELETE FROM questions WHERE quiz_id = $1", [quizId]);
-    await insertQuizQuestions(client, quizId, payload.questions);
+    await insertQuizQuestions(client, quizId, resolvedPayload.questions);
 
     await client.query("COMMIT");
     const quiz = await loadQuizWithRelations(client, quizIdColumn, quizId);
@@ -798,6 +1716,23 @@ export const updateQuiz = async (req: Request, res: Response) => {
       const quiz = inMemoryQuizzes.find((item) => item.quiz_id === quizId);
       if (!quiz) {
         return res.status(404).json({ error: "Quiz not found" });
+      }
+      if (
+        authUser.role === "faculty" &&
+        (!facultyHasClassAccessInMemory(
+          authUser.userId,
+          quiz.cls,
+          quiz.batch_id ?? null,
+        ) ||
+          !facultyHasClassAccessInMemory(
+            authUser.userId,
+            resolvedPayload.cls,
+            resolvedPayload.batchId ?? null,
+          ))
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to update quizzes for this class.",
+        });
       }
 
       // Reset in-memory attempts when quiz is updated
@@ -817,10 +1752,11 @@ export const updateQuiz = async (req: Request, res: Response) => {
         `[Quiz Update] Deleted ${attemptIndexesToRemove.length} in-memory attempts for quiz ${quizId}`,
       );
 
-      quiz.cls = payload.cls;
-      quiz.title = payload.title;
-      quiz.duration = payload.duration;
-      quiz.questions = buildInMemoryQuestions(payload.questions);
+      quiz.cls = resolvedPayload.cls;
+      quiz.title = resolvedPayload.title;
+      quiz.duration = resolvedPayload.duration;
+      quiz.batch_id = resolvedPayload.batchId ?? null;
+      quiz.questions = buildInMemoryQuestions(resolvedPayload.questions);
 
       console.log(
         `[Quiz Update] In-memory quiz ${quizId} updated and reset - students can attempt again`,
@@ -840,6 +1776,10 @@ export const updateQuizStatus = async (req: Request, res: Response) => {
   if (!quizId) {
     return;
   }
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
 
   const normalized = normalizeStatusPayload(req.body);
   if (normalized.error || !normalized.payload) {
@@ -852,6 +1792,24 @@ export const updateQuizStatus = async (req: Request, res: Response) => {
 
   try {
     const quizIdColumn = await resolveQuizIdColumn(pool);
+    const existingQuiz = await loadQuizWithRelations(pool, quizIdColumn, quizId);
+    if (!existingQuiz) {
+      return res.status(404).json({ error: "Quiz not found" });
+    }
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(existingQuiz.cls ?? ""),
+        Number(existingQuiz.batch_id ?? 0) || null,
+      ))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to update quizzes for this class.",
+      });
+    }
+
     const result = await pool.query(
       `UPDATE quizzes SET status = $1 WHERE ${quizIdColumn} = $2 RETURNING *`,
       [status, quizId],
@@ -868,6 +1826,18 @@ export const updateQuizStatus = async (req: Request, res: Response) => {
       if (!quiz) {
         return res.status(404).json({ error: "Quiz not found" });
       }
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(
+          authUser.userId,
+          quiz.cls,
+          quiz.batch_id ?? null,
+        )
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to update quizzes for this class.",
+        });
+      }
 
       quiz.status = status;
       return res.json(quiz);
@@ -883,9 +1853,31 @@ export const deleteQuiz = async (req: Request, res: Response) => {
   if (!quizId) {
     return;
   }
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
 
   try {
     const idColumn = await resolveQuizIdColumn(pool);
+    const existingQuiz = await loadQuizWithRelations(pool, idColumn, quizId);
+    if (!existingQuiz) {
+      return res.status(404).json({ error: "Quiz not found" });
+    }
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(existingQuiz.cls ?? ""),
+        Number(existingQuiz.batch_id ?? 0) || null,
+      ))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to delete quizzes for this class.",
+      });
+    }
+
     const result = await pool.query(
       `DELETE FROM quizzes WHERE ${idColumn} = $1`,
       [quizId],
@@ -902,6 +1894,18 @@ export const deleteQuiz = async (req: Request, res: Response) => {
       );
       if (quizIndex === -1) {
         return res.status(404).json({ error: "Quiz not found" });
+      }
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(
+          authUser.userId,
+          inMemoryQuizzes[quizIndex].cls,
+          inMemoryQuizzes[quizIndex].batch_id ?? null,
+        )
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to delete quizzes for this class.",
+        });
       }
 
       inMemoryQuizzes.splice(quizIndex, 1);
@@ -1059,7 +2063,10 @@ const ensureQuizAttemptTables = async (
       submitted_at TIMESTAMPTZ,
       status VARCHAR(20) NOT NULL DEFAULT 'InProgress',
       score INT,
-      total_questions INT NOT NULL DEFAULT 0
+      total_questions INT NOT NULL DEFAULT 0,
+      faculty_score NUMERIC,
+      reviewed_at TIMESTAMPTZ,
+      question_order JSONB
     )
   `);
 
@@ -1618,6 +2625,46 @@ const validateAttemptAnswersAgainstQuiz = (
   return null;
 };
 
+const hasAttemptAnswersPayload = (body: unknown): boolean => {
+  if (!body || typeof body !== "object") {
+    return false;
+  }
+
+  const payload = body as {
+    answers?: unknown;
+    questionId?: unknown;
+    answerText?: unknown;
+    selectedOptionText?: unknown;
+  };
+
+  return (
+    Array.isArray(payload.answers) ||
+    payload.questionId !== undefined ||
+    payload.answerText !== undefined ||
+    payload.selectedOptionText !== undefined
+  );
+};
+
+const upsertDbAttemptAnswers = async (
+  db: Pool | PoolClient,
+  attemptId: number,
+  answers: QuizAttemptAnswerInput[],
+): Promise<void> => {
+  for (const answer of answers) {
+    await db.query(
+      `
+        INSERT INTO quiz_attempt_answers (attempt_id, question_id, selected_option_text)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (attempt_id, question_id)
+        DO UPDATE SET
+          selected_option_text = EXCLUDED.selected_option_text,
+          updated_at = NOW()
+      `,
+      [attemptId, answer.questionId, answer.answerText],
+    );
+  }
+};
+
 const findLatestInMemoryAttempt = (
   quizId: number,
   studentId: string,
@@ -1730,6 +2777,10 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Quiz not found" });
     }
 
+    if (!(await ensureStudentCanAccessQuiz(req, res, pool, quiz))) {
+      return;
+    }
+
     const latestAttempt = await loadLatestDbAttempt(pool, quizId, studentId);
     if (latestAttempt) {
       let attemptForResponse = latestAttempt;
@@ -1807,6 +2858,9 @@ export const startQuizAttempt = async (req: Request, res: Response) => {
     return res.status(201).json(buildDbAttemptResponse(quiz, attempt, {}));
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
+      if (getAuthUserFromRequest(req)?.role === "student") {
+        return res.status(404).json({ error: "Quiz not found" });
+      }
       const quiz = inMemoryQuizzes.find((item) => item.quiz_id === quizId);
       if (!quiz) {
         return res.status(404).json({ error: "Quiz not found" });
@@ -2029,19 +3083,7 @@ export const saveQuizAttemptAnswers = async (req: Request, res: Response) => {
       return res.status(400).json({ error: validationError });
     }
 
-    for (const answer of answersToSave) {
-      await pool.query(
-        `
-          INSERT INTO quiz_attempt_answers (attempt_id, question_id, selected_option_text)
-          VALUES ($1, $2, $3)
-          ON CONFLICT (attempt_id, question_id)
-          DO UPDATE SET
-            selected_option_text = EXCLUDED.selected_option_text,
-            updated_at = NOW()
-        `,
-        [attemptId, answer.questionId, answer.answerText],
-      );
-    }
+    await upsertDbAttemptAnswers(pool, attemptId, answersToSave);
 
     const latestAnswers = await loadDbAttemptAnswers(pool, attemptId);
     return res.json({
@@ -2129,11 +3171,25 @@ export const submitQuizAttempt = async (req: Request, res: Response) => {
   }
 
   const studentId = resolveStudentId(req);
+  const normalizedAnswers =
+    hasAttemptAnswersPayload(req.body)
+      ? normalizeAttemptAnswersPayload(req.body)
+      : { payload: [] as QuizAttemptAnswerInput[] };
+  if (normalizedAnswers.error || !normalizedAnswers.payload) {
+    return res
+      .status(400)
+      .json({ error: normalizedAnswers.error ?? "Invalid answer payload" });
+  }
 
   try {
     const quizIdColumn = await resolveQuizIdColumn(pool);
     await ensureQuizQuestionTables(pool, quizIdColumn);
     await ensureQuizAttemptTables(pool, quizIdColumn);
+
+    const quiz = await loadQuizWithRelations(pool, quizIdColumn, quizId);
+    if (!quiz) {
+      return res.status(404).json({ error: "Quiz not found" });
+    }
 
     const attempt = await loadDbAttemptById(pool, quizId, attemptId);
     if (!attempt) {
@@ -2144,6 +3200,18 @@ export const submitQuizAttempt = async (req: Request, res: Response) => {
       return res
         .status(403)
         .json({ error: "Forbidden: attempt belongs to another student" });
+    }
+
+    if (!attempt.submitted_at && normalizedAnswers.payload.length > 0) {
+      const validationError = validateAttemptAnswersAgainstQuiz(
+        quiz,
+        normalizedAnswers.payload,
+      );
+      if (validationError) {
+        return res.status(400).json({ error: validationError });
+      }
+
+      await upsertDbAttemptAnswers(pool, attemptId, normalizedAnswers.payload);
     }
 
     const finalizedAttempt = await finalizeDbAttempt(
@@ -2175,6 +3243,23 @@ export const submitQuizAttempt = async (req: Request, res: Response) => {
         return res
           .status(403)
           .json({ error: "Forbidden: attempt belongs to another student" });
+      }
+
+      if (!attempt.submitted_at && normalizedAnswers.payload.length > 0) {
+        const validationError = validateAttemptAnswersAgainstQuiz(
+          sanitizeQuizForStudent({
+            ...quiz,
+            questions: quiz.questions,
+          } as Record<string, unknown>),
+          normalizedAnswers.payload,
+        );
+        if (validationError) {
+          return res.status(400).json({ error: validationError });
+        }
+
+        for (const answer of normalizedAnswers.payload) {
+          attempt.answers[answer.questionId] = answer.answerText;
+        }
       }
 
       finalizeInMemoryAttempt(quiz, attempt);
@@ -2248,6 +3333,7 @@ export const getFacultyResults = async (req: Request, res: Response) => {
   if (parsedQuizId === null) {
     return;
   }
+  const authUser = getAuthUserFromRequest(req);
 
   // Return mock data for testing if no database
   const mockResults = [
@@ -2467,14 +3553,32 @@ export const getFacultyResults = async (req: Request, res: Response) => {
       queryParams,
     );
 
-    return res.json(result.rows.map((row) => mapDbResultRow(row)));
+    let rows = result.rows.map((row) => mapDbResultRow(row));
+    if (authUser?.role === "faculty") {
+      const allowedClassNames = buildFacultyAllowedClassSet(
+        await getFacultyClassAllocations(pool, authUser.userId),
+      );
+      rows = rows.filter((row) =>
+        allowedClassNames.has(normalizeClassName(row.cls)),
+      );
+    }
+
+    return res.json(rows);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
       // Return mock data when database is unavailable
-      const filteredResults =
+      let filteredResults =
         parsedQuizId !== undefined
           ? mockResults.filter((r) => r.quiz_id === parsedQuizId)
           : mockResults;
+      if (authUser?.role === "faculty") {
+        const allowedClassNames = buildFacultyAllowedClassSet(
+          getInMemoryFacultyClassAllocations(authUser.userId),
+        );
+        filteredResults = filteredResults.filter((row) =>
+          allowedClassNames.has(normalizeClassName(row.cls)),
+        );
+      }
       return res.json(filteredResults);
     }
 
@@ -2486,6 +3590,11 @@ export const getFacultyResults = async (req: Request, res: Response) => {
 export const uploadFacultyResultScore = async (req: Request, res: Response) => {
   const attemptId = parseAttemptIdParam(req, res);
   if (!attemptId) {
+    return;
+  }
+
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
     return;
   }
 
@@ -2525,6 +3634,28 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
       });
     }
 
+    const quizResult = await pool.query(
+      `SELECT title AS quiz_title, cls FROM quizzes WHERE ${quizIdColumn} = $1`,
+      [attempt.quiz_id],
+    );
+    const quizRow = (quizResult.rows[0] ?? {}) as {
+      quiz_title?: unknown;
+      cls?: unknown;
+    };
+
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(quizRow.cls ?? ""),
+      ))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to review results for this class.",
+      });
+    }
+
     const updateResult = await pool.query(
       `
         UPDATE quiz_attempts
@@ -2536,15 +3667,6 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
       [score, attemptId],
     );
     const updatedAttempt = updateResult.rows[0] as DbAttemptRow;
-
-    const quizResult = await pool.query(
-      `SELECT title AS quiz_title, cls FROM quizzes WHERE ${quizIdColumn} = $1`,
-      [updatedAttempt.quiz_id],
-    );
-    const quizRow = (quizResult.rows[0] ?? {}) as {
-      quiz_title?: unknown;
-      cls?: unknown;
-    };
 
     return res.json({
       attempt_id: updatedAttempt.attempt_id,
@@ -2589,6 +3711,18 @@ export const uploadFacultyResultScore = async (req: Request, res: Response) => {
       const quiz = inMemoryQuizzes.find(
         (item) => item.quiz_id === attempt.quiz_id,
       );
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(
+          authUser.userId,
+          quiz?.cls ?? "",
+          quiz?.batch_id ?? null,
+        )
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to review results for this class.",
+        });
+      }
       return res.json({
         attempt_id: attempt.attempt_id,
         quiz_id: attempt.quiz_id,

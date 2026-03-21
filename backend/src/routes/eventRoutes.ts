@@ -12,7 +12,8 @@ import {
 
 const router = express.Router();
 
-router.get("/", authenticateToken, getEvents);
+// Public endpoint for fetching upcoming events (used on pre-login page)
+router.get("/", getEvents);
 router.post("/", authenticateToken, createEvent);
 router.put("/:id", authenticateToken, updateEvent);
 router.delete("/:id", authenticateToken, deleteEvent);

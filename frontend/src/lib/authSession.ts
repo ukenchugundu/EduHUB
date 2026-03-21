@@ -7,6 +7,14 @@ export interface StoredAuthSession {
   role: PortalRole;
   rollNumber?: string;
   studentId?: string;
+  token?: string;
+  phone?: string;
+  department?: string;
+  academicYear?: string;
+  section?: string;
+  designation?: string;
+  batchName?: string;
+  batchId?: number | null;
 }
 
 const AUTH_STORAGE_KEY = "eduhub_auth";
@@ -72,6 +80,18 @@ export const readStoredAuth = (): StoredAuthSession | null => {
     const fullName = String(parsed.fullName ?? "").trim();
     const rollNumber = String(parsed.rollNumber ?? "").trim();
     const studentId = String(parsed.studentId ?? "").trim();
+    const token = String(parsed.token ?? "").trim();
+    const phone = String(parsed.phone ?? "").trim();
+    const department = String(parsed.department ?? "").trim();
+    const academicYear = String(parsed.academicYear ?? "").trim();
+    const section = String(parsed.section ?? "").trim();
+    const designation = String(parsed.designation ?? "").trim();
+    const batchName = String(parsed.batchName ?? "").trim();
+    const batchIdValue = parsed.batchId;
+    const batchId =
+      batchIdValue === null || batchIdValue === undefined
+        ? undefined
+        : Number(batchIdValue);
     if (!Number.isFinite(userId) || userId <= 0 || !email) {
       return null;
     }
@@ -83,10 +103,45 @@ export const readStoredAuth = (): StoredAuthSession | null => {
       role: parsed.role,
       rollNumber: rollNumber || undefined,
       studentId: studentId || undefined,
+      token: token || undefined,
+      phone: phone || undefined,
+      department: department || undefined,
+      academicYear: academicYear || undefined,
+      section: section || undefined,
+      designation: designation || undefined,
+      batchName: batchName || undefined,
+      batchId:
+        batchId !== undefined && Number.isFinite(batchId) ? batchId : undefined,
     };
   } catch {
     return null;
   }
+};
+
+export const writeStoredAuth = (session: StoredAuthSession | null): void => {
+  if (!session) {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    return;
+  }
+
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+};
+
+export const mergeStoredAuth = (
+  updates: Partial<StoredAuthSession>,
+): StoredAuthSession | null => {
+  const current = readStoredAuth();
+  if (!current) {
+    return null;
+  }
+
+  const nextSession: StoredAuthSession = {
+    ...current,
+    ...updates,
+  };
+
+  writeStoredAuth(nextSession);
+  return nextSession;
 };
 
 export const getStudentIdentity = (): string => {

@@ -6,6 +6,14 @@ import {
   isSupabaseStorageConfigured,
   uploadBufferToSupabaseStorage,
 } from "../utils/supabaseStorage";
+import {
+  facultyHasClassAccess,
+  facultyHasClassAccessInMemory,
+  getAuthUserFromRequest,
+  getFacultyClassAllocations,
+  getInMemoryFacultyClassAllocations,
+  normalizeClassName,
+} from "../utils/facultyClassAccess";
 
 interface NormalizedNotePayload {
   cls: string;
@@ -281,6 +289,29 @@ const buildUploadedFileUrl = (req: Request, storedFileName: string): string => {
   return `${protocol}://${host}${pathName}`;
 };
 
+const buildFacultyAllowedClassSet = (
+  allocations: Array<{ className: string }>,
+): Set<string> =>
+  new Set(
+    allocations
+      .map((allocation) => normalizeClassName(allocation.className))
+      .filter(Boolean),
+  );
+
+const requireFacultyContentAccess = (
+  req: Request,
+  res: Response,
+): { userId: number; role: string } | null => {
+  const authUser = getAuthUserFromRequest(req);
+  if (!authUser || (authUser.role !== "faculty" && authUser.role !== "admin")) {
+    res.status(401).json({
+      error: "Faculty or admin authentication is required for this action.",
+    });
+    return null;
+  }
+  return authUser;
+};
+
 const ensureNotesTable = async (db: Pool | PoolClient): Promise<void> => {
   await db.query(`
     CREATE TABLE IF NOT EXISTS notes (
@@ -350,10 +381,10 @@ export const getNotes = async (req: Request, res: Response) => {
     typeof req.query.cls === "string" ? req.query.cls.trim() : "";
   const subjectQuery =
     typeof req.query.subject === "string" ? req.query.subject.trim() : "";
+  const authUser = getAuthUserFromRequest(req);
 
   try {
     await ensureNotesTable(pool);
-    await createSampleNoteInDb(pool);
 
     const whereParts: string[] = [];
     const values: string[] = [];
@@ -379,12 +410,21 @@ export const getNotes = async (req: Request, res: Response) => {
       `,
       values,
     );
+    let rows = result.rows.map((row) => mapNoteRow(row));
 
-    return res.json(result.rows.map((row) => mapNoteRow(row)));
+    if (authUser?.role === "faculty") {
+      const allowedClassNames = buildFacultyAllowedClassSet(
+        await getFacultyClassAllocations(pool, authUser.userId),
+      );
+      rows = rows.filter((row) =>
+        allowedClassNames.has(normalizeClassName(row.cls)),
+      );
+    }
+
+    return res.json(rows);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      ensureSampleNoteInMemory();
-      const rows = inMemoryNotes
+      let rows = inMemoryNotes
         .filter((note) => (clsQuery ? note.cls === clsQuery : true))
         .filter((note) => (subjectQuery ? note.subject === subjectQuery : true))
         .sort(
@@ -392,6 +432,14 @@ export const getNotes = async (req: Request, res: Response) => {
             new Date(b.created_at).getTime() -
               new Date(a.created_at).getTime() || b.note_id - a.note_id,
         );
+      if (authUser?.role === "faculty") {
+        const allowedClassNames = buildFacultyAllowedClassSet(
+          getInMemoryFacultyClassAllocations(authUser.userId),
+        );
+        rows = rows.filter((note) =>
+          allowedClassNames.has(normalizeClassName(note.cls)),
+        );
+      }
       return res.json(rows);
     }
 
@@ -401,6 +449,10 @@ export const getNotes = async (req: Request, res: Response) => {
 };
 
 export const uploadNoteFile = async (req: Request, res: Response) => {
+  if (!requireFacultyContentAccess(req, res)) {
+    return;
+  }
+
   if (!isSupabaseStorageConfigured()) {
     return res.status(500).json({
       error:
@@ -480,6 +532,11 @@ export const uploadNoteFile = async (req: Request, res: Response) => {
 };
 
 export const createNote = async (req: Request, res: Response) => {
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   const normalized = normalizeNotePayload(req.body);
   if (normalized.error || !normalized.payload) {
     return res
@@ -490,6 +547,16 @@ export const createNote = async (req: Request, res: Response) => {
   const payload = normalized.payload;
 
   try {
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(pool, authUser.userId, payload.cls))
+    ) {
+      return res.status(403).json({
+        error:
+          "You do not have access to create notes for this class. Ask admin to allocate the class first.",
+      });
+    }
+
     await ensureNotesTable(pool);
     const result = await pool.query(
       `
@@ -510,6 +577,16 @@ export const createNote = async (req: Request, res: Response) => {
     return res.status(201).json(mapNoteRow(result.rows[0]));
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(authUser.userId, payload.cls)
+      ) {
+        return res.status(403).json({
+          error:
+            "You do not have access to create notes for this class. Ask admin to allocate the class first.",
+        });
+      }
+
       const now = new Date().toISOString();
       const note: InMemoryNote = {
         note_id: inMemoryNoteId++,
@@ -537,6 +614,11 @@ export const updateNote = async (req: Request, res: Response) => {
     return;
   }
 
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   const normalized = normalizeNotePayload(req.body);
   if (normalized.error || !normalized.payload) {
     return res
@@ -548,6 +630,25 @@ export const updateNote = async (req: Request, res: Response) => {
 
   try {
     await ensureNotesTable(pool);
+    const existingNoteResult = await pool.query(
+      "SELECT cls FROM notes WHERE note_id = $1 LIMIT 1",
+      [noteId],
+    );
+    const existingNote = existingNoteResult.rows[0] as { cls?: unknown } | undefined;
+    if (!existingNote) {
+      return res.status(404).json({ error: "Note not found" });
+    }
+
+    if (
+      authUser.role === "faculty" &&
+      (!(await facultyHasClassAccess(pool, authUser.userId, String(existingNote.cls ?? ""))) ||
+        !(await facultyHasClassAccess(pool, authUser.userId, payload.cls)))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to update notes for this class.",
+      });
+    }
+
     const result = await pool.query(
       `
         UPDATE notes
@@ -584,6 +685,16 @@ export const updateNote = async (req: Request, res: Response) => {
         return res.status(404).json({ error: "Note not found" });
       }
 
+      if (
+        authUser.role === "faculty" &&
+        (!facultyHasClassAccessInMemory(authUser.userId, note.cls) ||
+          !facultyHasClassAccessInMemory(authUser.userId, payload.cls))
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to update notes for this class.",
+        });
+      }
+
       note.cls = payload.cls;
       note.subject = payload.subject;
       note.title = payload.title;
@@ -605,8 +716,35 @@ export const deleteNote = async (req: Request, res: Response) => {
     return;
   }
 
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   try {
     await ensureNotesTable(pool);
+    const existingNoteResult = await pool.query(
+      "SELECT cls FROM notes WHERE note_id = $1 LIMIT 1",
+      [noteId],
+    );
+    const existingNote = existingNoteResult.rows[0] as { cls?: unknown } | undefined;
+    if (!existingNote) {
+      return res.status(404).json({ error: "Note not found" });
+    }
+
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(existingNote.cls ?? ""),
+      ))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to delete notes for this class.",
+      });
+    }
+
     const result = await pool.query("DELETE FROM notes WHERE note_id = $1", [
       noteId,
     ]);
@@ -619,6 +757,14 @@ export const deleteNote = async (req: Request, res: Response) => {
       const index = inMemoryNotes.findIndex((item) => item.note_id === noteId);
       if (index === -1) {
         return res.status(404).json({ error: "Note not found" });
+      }
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(authUser.userId, inMemoryNotes[index].cls)
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to delete notes for this class.",
+        });
       }
       inMemoryNotes.splice(index, 1);
       return res.sendStatus(204);

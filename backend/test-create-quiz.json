@@ -1,0 +1,13 @@
+{
+  "cls": "API Class",
+  "title": "API Quiz",
+  "duration": "10 mins",
+  "questions": [
+    {
+      "question": "What is 1+1?",
+      "type": "mcq",
+      "options": ["1", "2"],
+      "correctAnswer": "2"
+    }
+  ]
+}

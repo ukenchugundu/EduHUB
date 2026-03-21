@@ -1,0 +1,23 @@
+
+> eduhub@1.0.0 dev:backend
+> cd backend && npm run dev
+
+
+> eduhub-backend@1.0.0 dev
+> nodemon src/index.ts
+
+[33m[nodemon] 3.1.14[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): *.*[39m
+[33m[nodemon] watching extensions: ts,json[39m
+[32m[nodemon] starting `ts-node src/index.ts`[39m
+[DB] Using PostgreSQL database connection
+[CORS] Configured with allowed origins: [Function: origin]
+[DB] Connected to Supabase Postgres
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting child process[39m
+[32m[nodemon] starting `ts-node src/index.ts`[39m
+[DB] Using PostgreSQL database connection
+[CORS] Configured with allowed origins: [Function: origin]
+[DB] Connected to Supabase Postgres
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m

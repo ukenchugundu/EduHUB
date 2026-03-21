@@ -1,4 +1,4 @@
-import { useState, useRef, ChangeEvent } from "react";
+import { useState, useRef, ChangeEvent, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -8,17 +8,16 @@ import {
   Shield,
   Camera,
   Trash2,
-  Save,
   LogOut,
   UserCog,
   Calendar,
   Clock,
   BookOpen,
   BarChart3,
+  TrendingUp,
   Settings,
   ArrowLeft,
 } from "lucide-react";
-import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import {
   buildProfileImageDataUrl,
@@ -29,13 +28,31 @@ import {
   readStoredAuth,
   readStoredProfileImage,
   removeStoredProfileImage,
+  mergeStoredAuth,
   writeStoredProfileImage,
-  StoredAuthSession,
 } from "@/lib/authSession";
+import {
+  buildStudentPerformanceSummary,
+  fetchStudentPerformanceData,
+} from "@/lib/studentPerformance";
 import { useTheme } from "@/contexts/ThemeContext";
 import StudentLayout from "@/components/StudentLayout";
 import FacultyLayout from "@/components/FacultyLayout";
 import AdminLayout from "@/components/AdminLayout";
+
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+interface LiveProfile {
+  email?: string;
+  role?: "student" | "faculty" | "admin";
+  fullName?: string;
+  rollNumber?: string;
+  studentId?: string;
+  department?: string;
+  academicYear?: string;
+  section?: string;
+  batchName?: string;
+}
 
 // Role-specific components based on user role
 const RoleBadge = ({ role }: { role: string }) => {
@@ -93,21 +110,101 @@ const Profile = () => {
   const profileImage = readStoredProfileImage(auth);
   const profileFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [name, setName] = useState(auth?.fullName || "");
   const [currentImage, setCurrentImage] = useState(profileImage);
-  const [isEditing, setIsEditing] = useState(false);
+  const [liveProfile, setLiveProfile] = useState<LiveProfile | null>(null);
+  const [studentAttendance, setStudentAttendance] = useState<number | null>(null);
+  const [studentCgpa, setStudentCgpa] = useState<number | null>(null);
+  const [studentAverageScore, setStudentAverageScore] = useState<number | null>(null);
 
   const profileName =
-    auth?.fullName?.trim() || auth?.email.split("@")[0] || "User";
-  const profileEmail = auth?.email || "-";
+    liveProfile?.fullName?.trim() ||
+    auth?.fullName?.trim() ||
+    auth?.email?.split("@")[0] ||
+    "User";
+  const profileEmail = liveProfile?.email || auth?.email || "-";
   const profileIdentifierLabel = getProfileIdentifierLabel(auth);
-  const profileIdentifierValue = getProfileIdentifierValue(auth);
+  const profileIdentifierValue =
+    auth?.role === "student"
+      ? liveProfile?.rollNumber || liveProfile?.studentId || getProfileIdentifierValue(auth)
+      : getProfileIdentifierValue(auth);
 
-  // Redirect if not logged in
-  if (!auth) {
-    navigate("/auth");
-    return null;
-  }
+  useEffect(() => {
+    const loadLiveProfile = async () => {
+      if (!auth?.token) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${auth.token}`,
+          },
+        });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const data = (await response.json()) as LiveProfile;
+        setLiveProfile(data);
+        mergeStoredAuth({
+          fullName: data.fullName || auth.fullName,
+          rollNumber: data.rollNumber || auth.rollNumber,
+          studentId: data.studentId || auth.studentId,
+          department: data.department || auth.department,
+          academicYear: data.academicYear || auth.academicYear,
+          section: data.section || auth.section,
+          batchName: data.batchName || auth.batchName,
+        });
+      } catch (error) {
+        console.error("Failed to fetch live profile:", error);
+      }
+    };
+
+    const loadStudentStats = async () => {
+      if (auth.role !== "student") {
+        return;
+      }
+
+      try {
+        const performanceData = await fetchStudentPerformanceData();
+        const summary = buildStudentPerformanceSummary(performanceData);
+        setStudentCgpa(summary.derivedCgpa);
+        setStudentAverageScore(summary.overallPercentage);
+      } catch (error) {
+        console.error("Failed to fetch student performance summary:", error);
+      }
+
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/attendance/students/${auth.userId}/attendance`,
+          {
+            headers: {
+              Authorization: `Bearer ${auth.token ?? ""}`,
+            },
+          },
+        );
+
+        if (!response.ok) {
+          return;
+        }
+
+        const data = (await response.json()) as {
+          summary?: { attendancePercentage?: number };
+        };
+        setStudentAttendance(
+          typeof data.summary?.attendancePercentage === "number"
+            ? data.summary.attendancePercentage
+            : null,
+        );
+      } catch (error) {
+        console.error("Failed to fetch student attendance summary:", error);
+      }
+    };
+
+    void loadLiveProfile();
+    void loadStudentStats();
+  }, [auth]);
 
   const handleUploadProfileImage = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -152,46 +249,63 @@ const Profile = () => {
     toast.success("Profile photo removed.");
   };
 
-  const handleSaveName = () => {
-    if (name.trim()) {
-      const updatedAuth = { ...auth, fullName: name.trim() };
-      localStorage.setItem("eduhub_auth", JSON.stringify(updatedAuth));
-      toast.success("Name updated successfully!");
-      setIsEditing(false);
-    }
-  };
-
   const handleLogout = () => {
     localStorage.removeItem("eduhub_auth");
     localStorage.removeItem("eduhub_student_id");
     navigate("/auth");
   };
 
-  // Get role-specific stats (placeholder - can be connected to actual data)
-  const getRoleStats = () => {
+  const roleStats = useMemo(() => {
     switch (auth?.role) {
       case "student":
         return [
-          { icon: BookOpen, label: "Enrolled Courses", value: 5 },
-          { icon: BarChart3, label: "Average Score", value: "85%" },
-          { icon: Calendar, label: "Attendance", value: "92%" },
+          {
+            icon: TrendingUp,
+            label: "Derived CGPA",
+            value: studentCgpa === null ? "-" : studentCgpa.toFixed(2),
+          },
+          {
+            icon: BarChart3,
+            label: "Average Score",
+            value: studentAverageScore === null ? "-" : `${studentAverageScore}%`,
+          },
+          {
+            icon: Calendar,
+            label: "Attendance",
+            value: studentAttendance === null ? "-" : `${studentAttendance}%`,
+          },
         ];
       case "faculty":
         return [
-          { icon: UserCog, label: "Active Courses", value: 3 },
-          { icon: BookOpen, label: "Total Students", value: 120 },
-          { icon: Clock, label: "Hours Taught", value: 48 },
+          { icon: UserCog, label: "Role", value: "Faculty" },
+          {
+            icon: BookOpen,
+            label: "Department",
+            value: auth.department || "-",
+          },
+          { icon: Clock, label: "Profile Source", value: "Database" },
         ];
       case "admin":
         return [
-          { icon: UserCog, label: "Total Users", value: 250 },
-          { icon: Shield, label: "Active Sessions", value: 12 },
-          { icon: Calendar, label: "Events", value: 8 },
+          { icon: Shield, label: "Role", value: "Administrator" },
+          { icon: Calendar, label: "Profile Source", value: "Database" },
+          { icon: UserCog, label: "Account", value: "Managed" },
         ];
       default:
         return [];
     }
-  };
+  }, [
+    auth?.department,
+    auth?.role,
+    studentAttendance,
+    studentAverageScore,
+    studentCgpa,
+  ]);
+
+  if (!auth) {
+    navigate("/auth");
+    return null;
+  }
 
   const Layout =
     auth?.role === "student"
@@ -264,46 +378,17 @@ const Profile = () => {
 
               {/* Name and Email */}
               <div className="flex-1">
-                {isEditing ? (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="text-2xl font-bold bg-background border border-border rounded-lg px-3 py-1 text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <button
-                      onClick={handleSaveName}
-                      className="p-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90"
-                    >
-                      <Save className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        setIsEditing(false);
-                        setName(auth?.fullName || "");
-                      }}
-                      className="p-2 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/70"
-                    >
-                      <LogOut className="w-4 h-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-2xl font-bold text-foreground">
-                      {profileName}
-                    </h2>
-                    <button
-                      onClick={() => setIsEditing(true)}
-                      className="p-1.5 rounded-lg hover:bg-secondary transition-colors"
-                    >
-                      <UserCog className="w-4 h-4 text-muted-foreground" />
-                    </button>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  <h2 className="text-2xl font-bold text-foreground">
+                    {profileName}
+                  </h2>
+                </div>
                 <p className="text-muted-foreground flex items-center gap-1.5">
                   <Mail className="w-4 h-4" />
                   {profileEmail}
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Profile details are synced from the latest database record.
                 </p>
               </div>
 
@@ -321,7 +406,7 @@ const Profile = () => {
 
         {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {getRoleStats().map((stat, index) => (
+          {roleStats.map((stat, index) => (
             <StatCard
               key={index}
               icon={stat.icon}
@@ -380,6 +465,66 @@ const Profile = () => {
                 </div>
               </div>
             </div>
+
+            {auth?.role === "student" && (
+              <>
+                <div className="flex items-center justify-between py-3 border-b border-border/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
+                      <BookOpen className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Department</p>
+                      <p className="font-medium text-foreground">
+                        {formatText(liveProfile?.department || auth?.department)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between py-3 border-b border-border/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
+                      <Calendar className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Academic Year</p>
+                      <p className="font-medium text-foreground">
+                        {formatText(liveProfile?.academicYear || auth?.academicYear)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between py-3 border-b border-border/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
+                      <GraduationCap className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Section</p>
+                      <p className="font-medium text-foreground">
+                        {formatText(liveProfile?.section || auth?.section)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between py-3 border-b border-border/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
+                      <BookOpen className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Batch</p>
+                      <p className="font-medium text-foreground">
+                        {formatText(liveProfile?.batchName || auth?.batchName)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div className="flex items-center justify-between py-3">
               <div className="flex items-center gap-3">

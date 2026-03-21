@@ -95,5 +95,6 @@ describe("AdminSchedule", () => {
     expect(screen.getAllByRole("columnheader", { name: /Period 1/i }).length).toBeGreaterThan(0);
     expect(screen.getByText("Monday")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /Save & send slot/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /Generate timetable/i })).toBeInTheDocument();
   });
 });

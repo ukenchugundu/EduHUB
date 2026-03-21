@@ -1,34 +1,10 @@
-# TODO: Fix Test Interface Errors
+# Fix TypeScript Errors and cSpell Warnings
 
-## Issues Fixed:
+## Steps:
+- [x] 1. Edit frontend/src/pages/admin/AdminDashboard.tsx: Remove duplicate useQuery imports and fix type errors in fetch functions using ApiResponse type.
+- [x] 2. Fix cSpell warning in database/Dockerfile by updating cspell.json (low priority).
+- [x] 3. Verify fixes: Run `cd frontend && npm run build` to check no TS errors.
+- [x] 4. Test runtime if needed and mark complete.
 
-### 1. Frontend - StudentTestInterface.tsx (components/) ✅
-- [x] Added authentication headers to all API calls (startTest, submitCode, submitTest)
-- [x] Added getAuthToken helper function for retrieving auth tokens
-- [x] Added API_BASE constant for consistent API URL handling
-
-### 2. Frontend - StudentTestInterface.tsx (pages/student/) ✅
-- [x] Already has authentication headers in all API calls (fetchTest, handleStartTest, handleRunCode, handleSubmitCode, handleSubmitTest, logCheatEvent)
-- [x] Uses getAuthToken helper function
-
-### 3. Frontend - StudentTests.tsx ✅
-- [x] Added authentication headers to fetchTests and fetchAttempts
-
-### 4. Backend - testRoutes.ts ✅
-- [x] Added starterCode to questions in GET /:testId endpoint
-- [x] Added getDefaultStarterCode helper function for fallback starter code
-- [x] Added testCases parsing from sample_input/sample_output
-
-### 5. Backend - index.ts ✅
-- [x] Route mounting is intentional (studentTestRoutes handles both student and faculty endpoints)
-
-### 6. Frontend - FacultyResults.tsx ✅
-- [x] Uses useRef directly imported from "react" (not React.useRef)
-
-## Summary:
-All major errors have been fixed:
-1. Authentication headers now included in all API calls (both components and pages versions)
-2. Backend now returns starterCode and testCases for questions
-3. Code execution service properly parses test cases
-4. Fixed React import issue in FacultyResults.tsx
+**Task complete! All TS errors fixed. Reload VSCode TS server if diagnostics linger (Ctrl+Shift+P > TypeScript: Restart TS Server).**
 

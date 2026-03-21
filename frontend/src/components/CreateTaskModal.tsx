@@ -20,10 +20,26 @@ import {
   GraduationCap,
   Zap,
 } from "lucide-react";
+import { readStoredAuth } from "@/lib/authSession";
+import {
+  fetchFacultyClassAllocations,
+  getFacultyClassOptionKey,
+  type FacultyClassAllocationOption,
+} from "@/lib/facultyClassAllocations";
+
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+interface SubjectOption {
+  id: number;
+  name: string;
+  code: string;
+}
 
 interface TaskFormData {
   title: string;
   type: "quiz" | "test" | "assignment";
+  cls: string;
+  batchId: number | null;
   subject: string;
   description: string;
   startDate: string;
@@ -77,6 +93,8 @@ const CreateTaskModal = ({
   const [formData, setFormData] = useState<TaskFormData>({
     title: "",
     type: taskType || "quiz",
+    cls: "",
+    batchId: null,
     subject: "",
     description: "",
     startDate: today,
@@ -112,6 +130,14 @@ const CreateTaskModal = ({
   const [currentStep, setCurrentStep] = useState(1);
   const isSecurityNeeded = taskType === "quiz" || taskType === "test";
   const totalSteps = isSecurityNeeded ? 4 : 3;
+  const [facultyClasses, setFacultyClasses] = useState<
+    FacultyClassAllocationOption[]
+  >([]);
+  const [loadingFacultyClasses, setLoadingFacultyClasses] = useState(false);
+  const [facultyClassesError, setFacultyClassesError] = useState("");
+  const [subjectOptions, setSubjectOptions] = useState<SubjectOption[]>([]);
+  const [loadingSubjects, setLoadingSubjects] = useState(false);
+  const [subjectsError, setSubjectsError] = useState("");
 
   useEffect(() => {
     if (isOpen && taskType) {
@@ -119,6 +145,8 @@ const CreateTaskModal = ({
       setFormData({
         title: "",
         type: taskType,
+        cls: "",
+        batchId: null,
         subject: "",
         description: "",
         startDate: today,
@@ -152,6 +180,123 @@ const CreateTaskModal = ({
       });
     }
   }, [isOpen, taskType]);
+
+  useEffect(() => {
+    if (!isOpen || taskType !== "quiz") {
+      return;
+    }
+
+    const session = readStoredAuth();
+    if (session?.role !== "faculty" || !session.token) {
+      setFacultyClasses([]);
+      setFacultyClassesError("Sign in again to load your assigned classes.");
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const loadFacultyClasses = async () => {
+      setLoadingFacultyClasses(true);
+      setFacultyClassesError("");
+
+      try {
+        const options = await fetchFacultyClassAllocations(controller.signal);
+
+        setFacultyClasses(options);
+        setFormData((prev) => {
+          if (
+            prev.cls.trim() &&
+            options.some(
+              (option) =>
+                option.className === prev.cls &&
+                option.batchId === (prev.batchId ?? null),
+            )
+          ) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            cls: "",
+            batchId: null,
+          };
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setFacultyClasses([]);
+        setFacultyClassesError("Unable to load assigned classes right now.");
+      } finally {
+        setLoadingFacultyClasses(false);
+      }
+    };
+
+    void loadFacultyClasses();
+
+    return () => controller.abort();
+  }, [isOpen, taskType]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const session = readStoredAuth();
+    if (!session?.token) {
+      setSubjectOptions([]);
+      setSubjectsError("Sign in again to load subjects.");
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const loadSubjects = async () => {
+      setLoadingSubjects(true);
+      setSubjectsError("");
+
+      try {
+        const response = await fetch(`${API_BASE}/api/attendance/subjects`, {
+          headers: {
+            Authorization: `Bearer ${session.token}`,
+          },
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          const data = (await response.json()) as SubjectOption[];
+          const options = Array.isArray(data) ? data : [];
+          if (options.length > 0) {
+            setSubjectOptions(options);
+            return;
+          }
+        }
+
+        const fallbackResponse = await fetch(`${API_BASE}/api/subjects`, {
+          signal: controller.signal,
+        });
+
+        if (!fallbackResponse.ok) {
+          throw new Error("Failed to load subjects.");
+        }
+
+        const fallbackData = (await fallbackResponse.json()) as SubjectOption[];
+        setSubjectOptions(Array.isArray(fallbackData) ? fallbackData : []);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setSubjectOptions([]);
+        setSubjectsError("Unable to load subjects right now.");
+      } finally {
+        setLoadingSubjects(false);
+      }
+    };
+
+    void loadSubjects();
+
+    return () => controller.abort();
+  }, [isOpen]);
 
   const handleInputChange = (field: string, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -190,6 +335,7 @@ const CreateTaskModal = ({
   const isFormValid = () => {
     return (
       formData.title.trim() &&
+      (formData.type !== "quiz" || formData.cls.trim()) &&
       formData.subject.trim() &&
       formData.description.trim()
     );
@@ -197,7 +343,11 @@ const CreateTaskModal = ({
 
   const handleSubmit = async () => {
     if (!isFormValid()) {
-      alert("Please fill in all required fields (Title, Subject, Description)");
+      alert(
+        formData.type === "quiz"
+          ? "Please fill in all required fields (Title, Class, Subject, Description)"
+          : "Please fill in all required fields (Title, Subject, Description)",
+      );
       return;
     }
 
@@ -233,6 +383,8 @@ const CreateTaskModal = ({
       setFormData({
         title: "",
         type: taskType || "quiz",
+        cls: "",
+        batchId: null,
         subject: "",
         description: "",
         startDate: today,
@@ -351,13 +503,77 @@ const CreateTaskModal = ({
                   onChange={(e) => handleInputChange("subject", e.target.value)}
                   className="w-full p-3 rounded-xl border border-border bg-background text-foreground"
                 >
-                  <option value="">Select Subject</option>
-                  <option value="Data Structures">Data Structures</option>
-                  <option value="DBMS">DBMS</option>
-                  <option value="Operating Systems">Operating Systems</option>
-                  <option value="Computer Networks">Computer Networks</option>
+                  <option value="">
+                    {loadingSubjects
+                      ? "Loading subjects..."
+                      : subjectOptions.length === 0
+                        ? "No subjects available"
+                        : "Select Subject"}
+                  </option>
+                  {subjectOptions.map((subject) => (
+                    <option key={subject.id} value={subject.name}>
+                      {subject.name} ({subject.code})
+                    </option>
+                  ))}
                 </select>
+                {subjectsError && (
+                  <p className="mt-1 text-xs text-destructive">
+                    {subjectsError}
+                  </p>
+                )}
               </div>
+
+              {taskType === "quiz" && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">
+                    Class
+                  </label>
+                <select
+                    value={
+                      formData.cls.trim()
+                        ? getFacultyClassOptionKey({
+                            className: formData.cls,
+                            batchId: formData.batchId ?? null,
+                          })
+                        : ""
+                    }
+                    onChange={(e) => {
+                      const selectedClass = facultyClasses.find(
+                        (option) =>
+                          getFacultyClassOptionKey(option) === e.target.value,
+                      );
+                      setFormData((prev) => ({
+                        ...prev,
+                        batchId: selectedClass?.batchId ?? null,
+                        cls: selectedClass?.className ?? "",
+                      }));
+                    }}
+                    className="w-full p-3 rounded-xl border border-border bg-background text-foreground"
+                    disabled={loadingFacultyClasses || facultyClasses.length === 0}
+                  >
+                    <option value="">
+                      {loadingFacultyClasses
+                        ? "Loading assigned classes..."
+                        : facultyClasses.length === 0
+                          ? "No assigned classes available"
+                          : "Select Class"}
+                    </option>
+                    {facultyClasses.map((option) => (
+                      <option
+                        key={getFacultyClassOptionKey(option)}
+                        value={getFacultyClassOptionKey(option)}
+                      >
+                        {option.className}
+                      </option>
+                    ))}
+                  </select>
+                  {facultyClassesError && (
+                    <p className="mt-1 text-xs text-destructive">
+                      {facultyClassesError}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <div>

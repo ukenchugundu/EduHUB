@@ -23,6 +23,13 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { readStoredAuth } from "@/lib/authSession";
+import {
+  fetchFacultyClassAllocations,
+  getFacultyClassOptionKey,
+  mergeFacultyClassAllocationOptions,
+  type FacultyClassAllocationOption,
+} from "@/lib/facultyClassAllocations";
 
 interface ApiErrorResponse {
   error?: string;
@@ -54,6 +61,14 @@ interface AssignmentSubmission {
 }
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+const buildAuthHeaders = (includeJsonContentType = false): HeadersInit => {
+  const token = readStoredAuth()?.token?.trim();
+  return {
+    ...(includeJsonContentType ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+};
 
 const withTimeoutSignal = (
   timeoutMs = 6000,
@@ -94,6 +109,7 @@ const fetchAssignments = async (
 
   try {
     const response = await fetch(`${API_BASE}/api/assignments`, {
+      headers: buildAuthHeaders(false),
       signal: request.signal,
     });
     if (!response.ok) {
@@ -104,30 +120,6 @@ const fetchAssignments = async (
       throw new Error(message);
     }
     return (await response.json()) as Assignment[];
-  } catch (error: unknown) {
-    // Return mock data for demo if API fails
-    return [
-      {
-        assignment_id: 1,
-        title: "Data Structures - Trees",
-        subject: "Data Structures",
-        cls: "III CSE-A",
-        description: "Implement a binary search tree with basic operations.",
-        due_date: "2024-12-30T23:59:59Z",
-        max_score: 100,
-        submission_count: 12,
-      },
-      {
-        assignment_id: 2,
-        title: "DBMS Normalization",
-        subject: "DBMS",
-        cls: "III CSE-B",
-        description: "Convert the given schema to 3NF.",
-        due_date: "2025-01-15T23:59:59Z",
-        max_score: 50,
-        submission_count: 8,
-      },
-    ];
   } finally {
     if (signal) {
       signal.removeEventListener("abort", onAbort);
@@ -149,6 +141,7 @@ const fetchFacultySubmissions = async (
     const response = await fetch(
       `${API_BASE}/api/faculty/assignments/submissions`,
       {
+        headers: buildAuthHeaders(false),
         signal: request.signal,
       },
     );
@@ -160,36 +153,6 @@ const fetchFacultySubmissions = async (
       throw new Error(message);
     }
     return (await response.json()) as AssignmentSubmission[];
-  } catch (error: unknown) {
-    // Return mock submissions for demo
-    return [
-      {
-        submission_id: 1,
-        assignment_id: 1,
-        student_id: "21CSE012",
-        submission_text: "Attached is the BST implementation in Java.",
-        submitted_at: "2024-12-25T10:30:00Z",
-        faculty_score: null,
-        reviewed_at: null,
-        assignment_title: "Data Structures - Trees",
-        subject: "Data Structures",
-        cls: "III CSE-A",
-        max_score: 100,
-      },
-      {
-        submission_id: 2,
-        assignment_id: 1,
-        student_id: "21CSE038",
-        submission_text: "BST implementation with traversal algorithms.",
-        submitted_at: "2024-12-26T09:15:00Z",
-        faculty_score: 88,
-        reviewed_at: "2024-12-27T10:00:00Z",
-        assignment_title: "Data Structures - Trees",
-        subject: "Data Structures",
-        cls: "III CSE-A",
-        max_score: 100,
-      },
-    ];
   } finally {
     if (signal) {
       signal.removeEventListener("abort", onAbort);
@@ -235,6 +198,11 @@ const FacultyAssignments = () => {
   });
 
   const [scoreDrafts, setScoreDrafts] = useState<Record<number, string>>({});
+  const [classOptions, setClassOptions] = useState<FacultyClassAllocationOption[]>(
+    [],
+  );
+  const [loadingClassOptions, setLoadingClassOptions] = useState(false);
+  const [classOptionsError, setClassOptionsError] = useState("");
 
   const assignmentsQuery = useQuery<Assignment[], Error>({
     queryKey: ["assignments"],
@@ -270,12 +238,61 @@ const FacultyAssignments = () => {
     });
   }, [submissionsQuery.data]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadClassOptions = async () => {
+      setLoadingClassOptions(true);
+      setClassOptionsError("");
+      try {
+        const options = await fetchFacultyClassAllocations(controller.signal);
+        setClassOptions(options);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setClassOptions([]);
+        setClassOptionsError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load assigned classes.",
+        );
+      } finally {
+        setLoadingClassOptions(false);
+      }
+    };
+
+    void loadClassOptions();
+    return () => controller.abort();
+  }, []);
+
+  const editClassOptions = useMemo(
+    () =>
+      mergeFacultyClassAllocationOptions([
+        ...classOptions,
+        ...(editingAssignment?.cls
+          ? [
+              {
+                className: editingAssignment.cls,
+                batchId: null,
+                department: "",
+                academicYear: "",
+                section: "",
+                studentCount: 0,
+              },
+            ]
+          : []),
+      ]),
+    [classOptions, editingAssignment],
+  );
+
   const deleteMutation = useMutation({
     mutationFn: async (assignmentId: number) => {
       const response = await fetch(
         `${API_BASE}/api/assignments/${assignmentId}`,
         {
           method: "DELETE",
+          headers: buildAuthHeaders(false),
         },
       );
       if (!response.ok) {
@@ -306,7 +323,7 @@ const FacultyAssignments = () => {
         `${API_BASE}/api/faculty/assignments/submissions/${params.submissionId}/score`,
         {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders(true),
           body: JSON.stringify({ score: params.score }),
         },
       );
@@ -355,7 +372,7 @@ const FacultyAssignments = () => {
         `${API_BASE}/api/assignments/${editingAssignment.assignment_id}`,
         {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders(true),
           body: JSON.stringify({
             cls: editForm.cls,
             subject: editForm.subject,
@@ -566,13 +583,49 @@ const FacultyAssignments = () => {
               </DialogDescription>
             </DialogHeader>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                placeholder="Class (e.g., III CSE-A)"
-                value={editForm.cls}
-                onChange={(event) =>
-                  setEditForm((prev) => ({ ...prev, cls: event.target.value }))
-                }
-              />
+              <div className="space-y-2">
+                <select
+                  value={
+                    editForm.cls
+                      ? getFacultyClassOptionKey({
+                          className: editForm.cls,
+                          batchId: null,
+                        })
+                      : ""
+                  }
+                  onChange={(event) => {
+                    const selected = editClassOptions.find(
+                      (option) =>
+                        getFacultyClassOptionKey(option) === event.target.value,
+                    );
+                    setEditForm((prev) => ({
+                      ...prev,
+                      cls: selected?.className ?? "",
+                    }));
+                  }}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  disabled={loadingClassOptions || editClassOptions.length === 0}
+                >
+                  <option value="">
+                    {loadingClassOptions
+                      ? "Loading assigned classes..."
+                      : editClassOptions.length === 0
+                        ? "No assigned classes available"
+                        : "Select assigned class"}
+                  </option>
+                  {editClassOptions.map((option) => (
+                    <option
+                      key={getFacultyClassOptionKey(option)}
+                      value={getFacultyClassOptionKey(option)}
+                    >
+                      {option.className}
+                    </option>
+                  ))}
+                </select>
+                {classOptionsError ? (
+                  <p className="text-xs text-destructive">{classOptionsError}</p>
+                ) : null}
+              </div>
               <Input
                 placeholder="Subject"
                 value={editForm.subject}

@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { getAcademicTableNames } from "../utils/studentPortalAccess";
 import { levenshteinDistance } from "../utils/stringUtils";
 
 interface CheatingEvent {
@@ -18,6 +19,7 @@ interface PlagiarismResult {
   similarSubmissions: {
     id: number;
     studentId: number;
+    studentName?: string;
     similarity: number;
     matchingLines: string[];
   }[];
@@ -29,6 +31,11 @@ export class AntiCheatService {
 
   constructor(db: Pool) {
     this.db = db;
+  }
+
+  private async getStudentTableName(): Promise<string | null> {
+    const { studentTableName } = await getAcademicTableNames(this.db);
+    return studentTableName;
   }
 
   // Log cheating events
@@ -104,19 +111,31 @@ export class AntiCheatService {
     }
 
     const current = currentSubmission.rows[0];
+    const studentTableName = await this.getStudentTableName();
 
     // Get all other submissions for the same question (excluding same student)
-    const otherSubmissions = await this.db.query(
-      `SELECT qs.id, qs.code, ta.student_id, s.name as student_name
-       FROM question_submissions qs
-       JOIN test_attempts ta ON qs.attempt_id = ta.id
-       JOIN students s ON ta.student_id = s.id
-       WHERE qs.question_id = $1 
-         AND ta.student_id != $2 
-         AND qs.status = 'Accepted'
-         AND qs.id != $3`,
-      [current.question_id, current.student_id, submissionId],
-    );
+    const otherSubmissions = studentTableName
+      ? await this.db.query(
+          `SELECT qs.id, qs.code, ta.student_id, COALESCE(s.name, 'Student') as student_name
+           FROM question_submissions qs
+           JOIN test_attempts ta ON qs.attempt_id = ta.id
+           LEFT JOIN ${studentTableName} s ON ta.student_id = s.id
+           WHERE qs.question_id = $1 
+             AND ta.student_id != $2 
+             AND qs.status = 'Accepted'
+             AND qs.id != $3`,
+          [current.question_id, current.student_id, submissionId],
+        )
+      : await this.db.query(
+          `SELECT qs.id, qs.code, ta.student_id, 'Student' as student_name
+           FROM question_submissions qs
+           JOIN test_attempts ta ON qs.attempt_id = ta.id
+           WHERE qs.question_id = $1 
+             AND ta.student_id != $2 
+             AND qs.status = 'Accepted'
+             AND qs.id != $3`,
+          [current.question_id, current.student_id, submissionId],
+        );
 
     const similarSubmissions = [];
 
@@ -217,25 +236,45 @@ export class AntiCheatService {
 
   // Get cheating report for faculty
   async getCheatingReport(testId: number): Promise<any> {
-    const result = await this.db.query(
-      `SELECT 
-        ta.id as attempt_id,
-        s.student_id,
-        s.name as student_name,
-        ta.status,
-        ta.plagiarism_score,
-        ta.cheating_flags,
-        ta.is_flagged,
-        COUNT(cl.id) as total_events,
-        COUNT(CASE WHEN cl.event_type IN ('tab_switch', 'window_blur', 'fullscreen_exit') THEN 1 END) as suspicious_events
-       FROM test_attempts ta
-       JOIN students s ON ta.student_id = s.id
-       LEFT JOIN cheating_logs cl ON ta.id = cl.attempt_id
-       WHERE ta.test_id = $1
-       GROUP BY ta.id, s.student_id, s.name, ta.status, ta.plagiarism_score, ta.cheating_flags, ta.is_flagged
-       ORDER BY ta.plagiarism_score DESC, suspicious_events DESC`,
-      [testId],
-    );
+    const studentTableName = await this.getStudentTableName();
+    const result = studentTableName
+      ? await this.db.query(
+          `SELECT 
+            ta.id as attempt_id,
+            COALESCE(s.student_id, ta.student_id::text) as student_id,
+            COALESCE(s.name, 'Student') as student_name,
+            ta.status,
+            ta.plagiarism_score,
+            ta.cheating_flags,
+            ta.is_flagged,
+            COUNT(cl.id) as total_events,
+            COUNT(CASE WHEN cl.event_type IN ('tab_switch', 'window_blur', 'fullscreen_exit') THEN 1 END) as suspicious_events
+           FROM test_attempts ta
+           LEFT JOIN ${studentTableName} s ON ta.student_id = s.id
+           LEFT JOIN cheating_logs cl ON ta.id = cl.attempt_id
+           WHERE ta.test_id = $1
+           GROUP BY ta.id, s.student_id, s.name, ta.status, ta.plagiarism_score, ta.cheating_flags, ta.is_flagged
+           ORDER BY ta.plagiarism_score DESC, suspicious_events DESC`,
+          [testId],
+        )
+      : await this.db.query(
+          `SELECT 
+            ta.id as attempt_id,
+            ta.student_id::text as student_id,
+            'Student' as student_name,
+            ta.status,
+            ta.plagiarism_score,
+            ta.cheating_flags,
+            ta.is_flagged,
+            COUNT(cl.id) as total_events,
+            COUNT(CASE WHEN cl.event_type IN ('tab_switch', 'window_blur', 'fullscreen_exit') THEN 1 END) as suspicious_events
+           FROM test_attempts ta
+           LEFT JOIN cheating_logs cl ON ta.id = cl.attempt_id
+           WHERE ta.test_id = $1
+           GROUP BY ta.id, ta.student_id, ta.status, ta.plagiarism_score, ta.cheating_flags, ta.is_flagged
+           ORDER BY ta.plagiarism_score DESC, suspicious_events DESC`,
+          [testId],
+        );
 
     return result.rows;
   }

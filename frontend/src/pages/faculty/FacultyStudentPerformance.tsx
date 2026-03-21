@@ -19,8 +19,14 @@ import {
   CheckCircle,
   GraduationCap,
 } from "lucide-react";
+import { readStoredAuth } from "@/lib/authSession";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+const buildAuthHeaders = (): HeadersInit => {
+  const token = readStoredAuth()?.token?.trim();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
 
 interface FacultyQuizResult {
   attempt_id: number;
@@ -125,6 +131,7 @@ const fetchFacultyQuizResults = async (
 
   try {
     const response = await fetch(`${API_BASE}/api/faculty/results`, {
+      headers: buildAuthHeaders(),
       signal: request.signal,
     });
     if (!response.ok) {
@@ -160,6 +167,7 @@ const fetchFacultyAssignmentSubmissions = async (
     const response = await fetch(
       `${API_BASE}/api/faculty/assignments/submissions`,
       {
+        headers: buildAuthHeaders(),
         signal: request.signal,
       },
     );

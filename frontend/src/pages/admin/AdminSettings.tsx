@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { refreshWebsiteData } from "@/lib/appRefresh";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const SETTINGS_STORAGE_KEY = "eduhub_admin_settings_v1";
@@ -57,12 +58,12 @@ const fetchJson = async <T,>(
   options?: RequestInit,
   fallbackError = "Request failed.",
 ): Promise<T> => {
-  const response = await fetch(url, options);
-  const body = (await response.json().catch(() => ({}))) as ApiErrorBody & T;
-  if (!response.ok) {
-    throw new Error(body.error || fallbackError);
-  }
-  return body as T;
+  return apiRequestJson<T>(url, options, {
+    fallbackError,
+    retries: 1,
+    timeoutMs: 8000,
+    includeAuth: false,
+  });
 };
 
 const fetchDashboardData = async (

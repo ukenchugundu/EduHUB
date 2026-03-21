@@ -1,7 +1,8 @@
 import AdminLayout from "@/components/AdminLayout";
-import { useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   GraduationCap,
   RefreshCw,
   Search,
@@ -11,6 +12,13 @@ import {
   Users,
 } from "lucide-react";
 import { refreshWebsiteData } from "@/lib/appRefresh";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
+import { readStoredAuth } from "@/lib/authSession";
+import {
+  getFacultyClassOptionKey,
+  mergeFacultyClassAllocationOptions,
+  type FacultyClassAllocationOption,
+} from "@/lib/facultyClassAllocations";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
@@ -30,6 +38,7 @@ interface AdminMember {
   designation: string;
   createdAt: string;
   updatedAt: string;
+  assignedClasses: FacultyClassAllocationOption[];
 }
 
 interface AdminMembersData {
@@ -104,17 +113,35 @@ interface CreateMemberPayload {
 
 const ROLE_FILTERS: MemberFilterRole[] = ["all", "faculty", "student", "admin"];
 
+const buildAuthHeaders = (includeJsonContentType = false): HeadersInit => {
+  const token = readStoredAuth()?.token?.trim();
+  return {
+    ...(includeJsonContentType ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+};
+
 const fetchJson = async <T,>(
   url: string,
   options?: RequestInit,
   fallbackError = "Request failed.",
 ): Promise<T> => {
-  const response = await fetch(url, options);
-  const body = (await response.json().catch(() => ({}))) as ApiErrorBody & T;
-  if (!response.ok) {
-    throw new Error(body.error || fallbackError);
-  }
-  return body as T;
+  return apiRequestJson<T>(
+    url,
+    {
+      ...options,
+      headers: {
+        ...buildAuthHeaders(false),
+        ...(options?.headers ?? {}),
+      },
+    },
+    {
+      fallbackError,
+      retries: 1,
+      timeoutMs: 8000,
+      includeAuth: false,
+    },
+  );
 };
 
 const fetchAdminMembers = async (
@@ -140,7 +167,7 @@ const createMemberByAdmin = async (payload: CreateMemberPayload) =>
     `${API_BASE}/api/admin/members`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildAuthHeaders(true),
       body: JSON.stringify(payload),
     },
     "Failed to create member.",
@@ -160,7 +187,7 @@ const updateMemberByAdmin = async (
     `${API_BASE}/api/admin/members/${memberId}`,
     {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: buildAuthHeaders(true),
       body: JSON.stringify(payload),
     },
     "Failed to update member.",
@@ -169,8 +196,42 @@ const updateMemberByAdmin = async (
 const deleteMemberByAdmin = async (memberId: number) =>
   fetchJson<{ deleted: AdminMember }>(
     `${API_BASE}/api/admin/members/${memberId}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: buildAuthHeaders(false) },
     "Failed to delete member.",
+  );
+
+const fetchAdminClassOptions = async (
+  signal?: AbortSignal,
+): Promise<FacultyClassAllocationOption[]> => {
+  const body = await fetchJson<{ classOptions?: FacultyClassAllocationOption[] }>(
+    `${API_BASE}/api/admin/class-options`,
+    { signal, headers: buildAuthHeaders(false) },
+    "Failed to load class options.",
+  );
+
+  return Array.isArray(body.classOptions) ? body.classOptions : [];
+};
+
+const updateFacultyClassAllocationsByAdmin = async (
+  memberId: number,
+  allocations: FacultyClassAllocationOption[],
+) =>
+  fetchJson<{ assignedClasses: FacultyClassAllocationOption[] }>(
+    `${API_BASE}/api/admin/members/${memberId}/class-allocations`,
+    {
+      method: "PUT",
+      headers: buildAuthHeaders(true),
+      body: JSON.stringify({
+        allocations: allocations.map((allocation) => ({
+          className: allocation.className,
+          batchId: allocation.batchId,
+          department: allocation.department,
+          academicYear: allocation.academicYear,
+          section: allocation.section,
+        })),
+      }),
+    },
+    "Failed to save faculty class allocations.",
   );
 
 const formatDateTime = (value: string): string => {
@@ -260,6 +321,74 @@ const createInitialAdminForm = (): AdminFormState => ({
   createdAt: getCurrentDateTimeLocalValue(),
 });
 
+const extractStudentSectionOption = (
+  option: FacultyClassAllocationOption,
+): string => {
+  const explicitSection = option.section.trim();
+  if (explicitSection) {
+    return explicitSection;
+  }
+
+  const className = option.className.trim();
+  const sectionLabelMatch = className.match(/section\s+([a-z0-9]+)$/i);
+  if (sectionLabelMatch?.[1]) {
+    return sectionLabelMatch[1].toUpperCase();
+  }
+
+  const suffixMatch = className.match(/-([a-z0-9]+)$/i);
+  if (suffixMatch?.[1]) {
+    return suffixMatch[1].toUpperCase();
+  }
+
+  return "";
+};
+
+const extractStudentYearOption = (
+  option: FacultyClassAllocationOption,
+): string => {
+  const className = option.className.trim().toUpperCase();
+  if (!className) {
+    return "";
+  }
+
+  const firstToken = className.split(/\s+/)[0] ?? "";
+  if (firstToken === "I" || firstToken === "1" || firstToken === "1ST") {
+    return "1st yr";
+  }
+  if (firstToken === "II" || firstToken === "2" || firstToken === "2ND") {
+    return "2nd yr";
+  }
+  if (firstToken === "III" || firstToken === "3" || firstToken === "3RD") {
+    return "3rd yr";
+  }
+  if (firstToken === "IV" || firstToken === "4" || firstToken === "4TH") {
+    return "4th yr";
+  }
+
+  const yearLabelMatch = className.match(/([1-4])(ST|ND|RD|TH)\s*YR/i);
+  if (yearLabelMatch?.[1]) {
+    return `${yearLabelMatch[1]}${yearLabelMatch[2].toLowerCase()} yr`;
+  }
+
+  return "";
+};
+
+const getStudentYearOrder = (value: string): number => {
+  if (value.startsWith("1st")) {
+    return 1;
+  }
+  if (value.startsWith("2nd")) {
+    return 2;
+  }
+  if (value.startsWith("3rd")) {
+    return 3;
+  }
+  if (value.startsWith("4th")) {
+    return 4;
+  }
+  return Number.MAX_SAFE_INTEGER;
+};
+
 const AdminUsers = () => {
   const queryClient = useQueryClient();
   const [facultyForm, setFacultyForm] = useState<FacultyFormState>(
@@ -285,6 +414,11 @@ const AdminUsers = () => {
   const [processingMemberId, setProcessingMemberId] = useState<number | null>(
     null,
   );
+  const [selectedFacultyId, setSelectedFacultyId] = useState<number | null>(null);
+  const [selectedAllocationKeys, setSelectedAllocationKeys] = useState<string[]>(
+    [],
+  );
+  const [isSavingAllocations, setIsSavingAllocations] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState("");
   const [editForm, setEditForm] = useState<EditFormState>(createInitialEditForm);
@@ -305,10 +439,177 @@ const AdminUsers = () => {
     retry: 1,
   });
 
+  const {
+    data: facultyMembersData,
+  } = useQuery<AdminMembersData, Error>({
+    queryKey: ["admin-faculty-members"],
+    queryFn: ({ signal }) => fetchAdminMembers("faculty", "", signal),
+    refetchInterval: 7000,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
+    retry: 1,
+  });
+
+  const {
+    data: classOptionsData,
+    isLoading: isLoadingClassOptions,
+    isError: isClassOptionsError,
+    error: classOptionsError,
+  } = useQuery<FacultyClassAllocationOption[], Error>({
+    queryKey: ["admin-class-options"],
+    queryFn: ({ signal }) => fetchAdminClassOptions(signal),
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
+    retry: 1,
+  });
+
   const memberRows = membersData?.members ?? [];
+  const facultyMembers = facultyMembersData?.members ?? [];
+  const selectedFaculty =
+    facultyMembers.find((member) => member.id === selectedFacultyId) ?? null;
+  const allocationOptions = useMemo(
+    () =>
+      mergeFacultyClassAllocationOptions([
+        ...(classOptionsData ?? []),
+        ...(selectedFaculty?.assignedClasses ?? []),
+      ]),
+    [classOptionsData, selectedFaculty],
+  );
+  const studentClassOptions = useMemo(
+    () => mergeFacultyClassAllocationOptions(classOptionsData ?? []),
+    [classOptionsData],
+  );
+  const studentDepartmentOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          studentClassOptions
+            .map((option) => option.department.trim())
+            .filter(Boolean),
+        ),
+      ).sort((left, right) => left.localeCompare(right)),
+    [studentClassOptions],
+  );
+  const studentYearOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          studentClassOptions
+            .filter((option) =>
+              studentForm.department
+                ? option.department.trim() === studentForm.department.trim()
+                : true,
+            )
+            .map((option) => extractStudentYearOption(option))
+            .filter(Boolean),
+        ),
+      ).sort(
+        (left, right) =>
+          getStudentYearOrder(left) - getStudentYearOrder(right) ||
+          left.localeCompare(right),
+      ),
+    [studentClassOptions, studentForm.department],
+  );
+  const studentSectionOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          studentClassOptions
+            .filter((option) =>
+              studentForm.department
+                ? option.department.trim() === studentForm.department.trim()
+                : true,
+            )
+            .filter((option) =>
+              studentForm.year
+                ? extractStudentYearOption(option) === studentForm.year.trim()
+                : true,
+            )
+            .map((option) => extractStudentSectionOption(option))
+            .filter(Boolean),
+        ),
+      ).sort((left, right) => left.localeCompare(right)),
+    [studentClassOptions, studentForm.department, studentForm.year],
+  );
   const inputClass =
     "w-full rounded-xl border border-border/70 bg-background/60 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30";
   const readOnlyInputClass = `${inputClass} cursor-not-allowed opacity-80`;
+
+  useEffect(() => {
+    if (selectedFacultyId && facultyMembers.some((member) => member.id === selectedFacultyId)) {
+      return;
+    }
+
+    setSelectedFacultyId(facultyMembers[0]?.id ?? null);
+  }, [facultyMembers, selectedFacultyId]);
+
+  useEffect(() => {
+    if (!selectedFaculty) {
+      setSelectedAllocationKeys([]);
+      return;
+    }
+
+    setSelectedAllocationKeys(
+      (selectedFaculty.assignedClasses ?? []).map((allocation) =>
+        getFacultyClassOptionKey(allocation),
+      ),
+    );
+  }, [selectedFaculty]);
+
+  useEffect(() => {
+    const nextDepartment = studentDepartmentOptions[0] ?? "";
+    if (
+      studentForm.department &&
+      studentDepartmentOptions.includes(studentForm.department)
+    ) {
+      return;
+    }
+
+    if (studentForm.department === nextDepartment) {
+      return;
+    }
+
+    setStudentForm((previous) => ({
+      ...previous,
+      department: nextDepartment,
+    }));
+  }, [studentDepartmentOptions, studentForm.department]);
+
+  useEffect(() => {
+    const nextYear = studentYearOptions[0] ?? "";
+    if (studentForm.year && studentYearOptions.includes(studentForm.year)) {
+      return;
+    }
+
+    if (studentForm.year === nextYear) {
+      return;
+    }
+
+    setStudentForm((previous) => ({
+      ...previous,
+      year: nextYear,
+    }));
+  }, [studentYearOptions, studentForm.year]);
+
+  useEffect(() => {
+    const nextSection = studentSectionOptions[0] ?? "";
+    if (
+      studentForm.section &&
+      studentSectionOptions.includes(studentForm.section)
+    ) {
+      return;
+    }
+
+    if (studentForm.section === nextSection) {
+      return;
+    }
+
+    setStudentForm((previous) => ({
+      ...previous,
+      section: nextSection,
+    }));
+  }, [studentSectionOptions, studentForm.section]);
 
   const resetFeedback = () => {
     setMessage("");
@@ -383,7 +684,14 @@ const AdminUsers = () => {
         phone: studentForm.phone.trim(),
       });
       setMessage("Student account created successfully.");
-      setStudentForm(createInitialStudentForm());
+      setStudentForm((previous) => ({
+        ...previous,
+        studentId: "",
+        name: "",
+        email: "",
+        password: "",
+        phone: "",
+      }));
       await refetch();
     } catch (createError) {
       setErrorMessage(
@@ -501,6 +809,49 @@ const AdminUsers = () => {
       );
     } finally {
       setProcessingMemberId(null);
+    }
+  };
+
+  const toggleAllocationSelection = (allocation: FacultyClassAllocationOption) => {
+    const key = getFacultyClassOptionKey(allocation);
+    setSelectedAllocationKeys((previous) =>
+      previous.includes(key)
+        ? previous.filter((item) => item !== key)
+        : [...previous, key],
+    );
+  };
+
+  const handleSaveFacultyAllocations = async () => {
+    if (!selectedFaculty) {
+      setErrorMessage("Select a faculty member to manage class allocations.");
+      return;
+    }
+
+    resetFeedback();
+    setIsSavingAllocations(true);
+    try {
+      const selectedAllocations = allocationOptions.filter((allocation) =>
+        selectedAllocationKeys.includes(getFacultyClassOptionKey(allocation)),
+      );
+
+      await updateFacultyClassAllocationsByAdmin(
+        selectedFaculty.id,
+        selectedAllocations,
+      );
+      setMessage("Faculty class allocations saved successfully.");
+      await Promise.all([
+        refetch(),
+        queryClient.invalidateQueries({ queryKey: ["admin-faculty-members"] }),
+        queryClient.invalidateQueries({ queryKey: ["admin-members-page"] }),
+      ]);
+    } catch (allocationError) {
+      setErrorMessage(
+        allocationError instanceof Error
+          ? allocationError.message
+          : "Failed to save faculty class allocations.",
+      );
+    } finally {
+      setIsSavingAllocations(false);
     }
   };
 
@@ -701,9 +1052,7 @@ const AdminUsers = () => {
                 minLength={6}
                 required
               />
-              <input
-                type="text"
-                placeholder="Department"
+              <select
                 className={inputClass}
                 value={studentForm.department}
                 onChange={(event) =>
@@ -712,11 +1061,25 @@ const AdminUsers = () => {
                     department: event.target.value,
                   }))
                 }
+                disabled={
+                  isLoadingClassOptions || studentDepartmentOptions.length === 0
+                }
                 required
-              />
-              <input
-                type="text"
-                placeholder="Year"
+              >
+                <option value="">
+                  {isLoadingClassOptions
+                    ? "Loading departments..."
+                    : studentDepartmentOptions.length === 0
+                      ? "No departments found in DB"
+                      : "Select department"}
+                </option>
+                {studentDepartmentOptions.map((department) => (
+                  <option key={department} value={department}>
+                    {department}
+                  </option>
+                ))}
+              </select>
+              <select
                 className={inputClass}
                 value={studentForm.year}
                 onChange={(event) =>
@@ -725,11 +1088,23 @@ const AdminUsers = () => {
                     year: event.target.value,
                   }))
                 }
+                disabled={isLoadingClassOptions || studentYearOptions.length === 0}
                 required
-              />
-              <input
-                type="text"
-                placeholder="Section"
+              >
+                <option value="">
+                  {isLoadingClassOptions
+                    ? "Loading years..."
+                    : studentYearOptions.length === 0
+                      ? "No years found"
+                      : "Select year"}
+                </option>
+                {studentYearOptions.map((year) => (
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+              <select
                 className={inputClass}
                 value={studentForm.section}
                 onChange={(event) =>
@@ -738,8 +1113,24 @@ const AdminUsers = () => {
                     section: event.target.value,
                   }))
                 }
+                disabled={
+                  isLoadingClassOptions || studentSectionOptions.length === 0
+                }
                 required
-              />
+              >
+                <option value="">
+                  {isLoadingClassOptions
+                    ? "Loading sections..."
+                    : studentSectionOptions.length === 0
+                      ? "No sections found"
+                      : "Select section"}
+                </option>
+                {studentSectionOptions.map((section) => (
+                  <option key={section} value={section}>
+                    {section}
+                  </option>
+                ))}
+              </select>
               <input
                 type="tel"
                 placeholder="Phone"
@@ -753,6 +1144,11 @@ const AdminUsers = () => {
                 }
                 required
               />
+              {isClassOptionsError ? (
+                <p className="text-xs text-destructive">
+                  {classOptionsError?.message ?? "Failed to load DB options."}
+                </p>
+              ) : null}
               <input type="text" className={readOnlyInputClass} value="student" readOnly />
               <button
                 type="submit"
@@ -856,6 +1252,171 @@ const AdminUsers = () => {
                 {isCreatingAdmin ? "Creating..." : "Create Admin"}
               </button>
             </form>
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-6 space-y-5">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="font-heading font-semibold text-foreground">
+                Faculty Class Allocation
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Select a faculty member, then assign the classes they are allowed
+                to manage for notes, quizzes, and assignments.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleSaveFacultyAllocations()}
+              disabled={!selectedFaculty || isSavingAllocations}
+              className="rounded-xl gradient-primary px-4 py-2 text-sm font-medium text-white disabled:opacity-70"
+            >
+              {isSavingAllocations ? "Saving..." : "Save Class Allocation"}
+            </button>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="space-y-3">
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+                Faculty
+              </p>
+              {facultyMembers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No faculty members are available yet.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {facultyMembers.map((faculty) => {
+                    const isSelected = selectedFacultyId === faculty.id;
+                    return (
+                      <button
+                        key={faculty.id}
+                        type="button"
+                        onClick={() => setSelectedFacultyId(faculty.id)}
+                        className={`w-full rounded-xl border p-3 text-left transition-colors ${
+                          isSelected
+                            ? "border-primary bg-primary/10"
+                            : "border-border/70 bg-secondary/20 hover:bg-secondary/40"
+                        }`}
+                      >
+                        <p className="text-sm font-semibold text-foreground">
+                          {faculty.fullName || faculty.email}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {faculty.rollNumber || "Faculty ID not set"} •{" "}
+                          {faculty.department || "Department not set"}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Allocated classes: {faculty.assignedClasses?.length ?? 0}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-xl border border-border/70 bg-secondary/20 p-4">
+                <p className="text-sm font-semibold text-foreground">
+                  {selectedFaculty
+                    ? selectedFaculty.fullName || selectedFaculty.email
+                    : "Select a faculty member"}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {selectedFaculty
+                    ? "Only the checked classes below will be available to this faculty in the portal."
+                    : "Choose a faculty member from the left to start allocating classes."}
+                </p>
+                {selectedFaculty?.assignedClasses?.length ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedFaculty.assignedClasses.map((allocation) => (
+                      <span
+                        key={`${selectedFaculty.id}-${getFacultyClassOptionKey(allocation)}`}
+                        className="inline-flex rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+                      >
+                        {allocation.className}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              {isClassOptionsError ? (
+                <p className="text-sm text-destructive">
+                  {classOptionsError?.message ?? "Failed to load class options."}
+                </p>
+              ) : null}
+
+              {isLoadingClassOptions ? (
+                <p className="text-sm text-muted-foreground">
+                  Loading classes from the database...
+                </p>
+              ) : null}
+
+              {!isLoadingClassOptions && allocationOptions.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No classes were found yet. Add student records or batch data so
+                  the system can build class options.
+                </p>
+              ) : null}
+
+              {allocationOptions.length > 0 ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {allocationOptions.map((allocation) => {
+                    const optionKey = getFacultyClassOptionKey(allocation);
+                    const isChecked = selectedAllocationKeys.includes(optionKey);
+                    const subtitle = [
+                      allocation.department,
+                      allocation.academicYear,
+                      allocation.section
+                        ? `Section ${allocation.section}`
+                        : "",
+                      allocation.studentCount > 0
+                        ? `${allocation.studentCount} students`
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" • ");
+
+                    return (
+                      <button
+                        key={optionKey}
+                        type="button"
+                        onClick={() => toggleAllocationSelection(allocation)}
+                        disabled={!selectedFaculty}
+                        className={`rounded-xl border p-4 text-left transition-colors disabled:opacity-60 ${
+                          isChecked
+                            ? "border-primary bg-primary/10"
+                            : "border-border/70 bg-background/60 hover:bg-secondary/30"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-foreground">
+                              {allocation.className}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {subtitle || "Class option from the database"}
+                            </p>
+                          </div>
+                          <span
+                            className={`inline-flex h-6 w-6 items-center justify-center rounded-full border ${
+                              isChecked
+                                ? "border-primary bg-primary text-white"
+                                : "border-border text-muted-foreground"
+                            }`}
+                          >
+                            {isChecked ? <Check className="h-3.5 w-3.5" /> : null}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -1037,6 +1598,19 @@ const AdminUsers = () => {
                           </span>
                         ))}
                       </div>
+                      {member.role === "faculty" &&
+                      member.assignedClasses?.length > 0 ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {member.assignedClasses.map((allocation) => (
+                            <span
+                              key={`${member.id}-${getFacultyClassOptionKey(allocation)}`}
+                              className="inline-flex rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+                            >
+                              {allocation.className}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2">
                       <button

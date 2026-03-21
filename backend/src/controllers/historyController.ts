@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import pool from "../utils/db";
+import { resolvePortalStudentIdByIdentifier } from "../utils/studentPortalAccess";
 
 const dbConnectionErrorCodes = new Set([
   "28P01",
@@ -114,6 +115,13 @@ export const getStudentHistory = async (req: Request, res: Response) => {
     // Check if test_attempts table exists
     let testHistory: any[] = [];
     try {
+      const portalStudentId = await resolvePortalStudentIdByIdentifier(
+        pool,
+        studentId,
+      );
+      if (!portalStudentId) {
+        testHistory = [];
+      } else {
       const testResult = await pool.query(
         `SELECT 
           ta.attempt_id as id,
@@ -127,9 +135,10 @@ export const getStudentHistory = async (req: Request, res: Response) => {
         LEFT JOIN coding_tests t ON ta.test_id = t.id
         WHERE ta.student_id = $1 AND ta.status = 'Submitted'
         ORDER BY COALESCE(ta.end_time, ta.start_time) DESC`,
-        [studentId]
+        [portalStudentId]
       );
       testHistory = testResult.rows;
+      }
     } catch (e) {
       console.warn("Test history query failed:", e);
     }
@@ -161,21 +170,6 @@ export const getStudentHistory = async (req: Request, res: Response) => {
       ...inMemoryHistory
     ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    // If no history found, return mock data for demo
-    if (combinedHistory.length === 0) {
-      return res.json([
-        {
-          id: 1,
-          title: "Sample Quiz - Python Basics",
-          type: "quiz",
-          date: new Date().toISOString(),
-          score: "Pending",
-          subject: "Computer Science",
-          createdAt: new Date().toISOString()
-        }
-      ]);
-    }
-
     return res.json(combinedHistory);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
@@ -206,4 +200,3 @@ export const addToHistory = (
   inMemoryHistory.unshift(entry);
   return entry;
 };
-

@@ -4,22 +4,10 @@ import { Code, Clock, Calendar, CheckCircle, ArrowRight, Play } from "lucide-rea
 import StudentLayout from "@/components/StudentLayout";
 import { motion, AnimatePresence } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
+import { readStoredAuth } from "@/lib/authSession";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-
-// Helper to get auth token
-const getAuthToken = (): string | null => {
-  try {
-    const authData = localStorage.getItem("eduhub_auth");
-    if (authData) {
-      const parsed = JSON.parse(authData);
-      return parsed.token || null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-};
 
 interface Test {
   id: number;
@@ -47,6 +35,7 @@ export const StudentTests: React.FC = () => {
   const [availableTests, setAvailableTests] = useState<Test[]>([]);
   const [myAttempts, setMyAttempts] = useState<TestAttempt[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<"available" | "completed">("available");
 
   useEffect(() => {
@@ -56,57 +45,29 @@ export const StudentTests: React.FC = () => {
 
   const fetchTests = async () => {
     try {
-      const token = getAuthToken();
-      const response = await fetch(`${API_BASE}/api/tests/available`, {
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+      const token = readStoredAuth()?.token?.trim();
+      const data = await apiRequestJson<unknown[]>(
+        `${API_BASE}/api/tests/available`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
         },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setAvailableTests(data);
-      } else {
-        // Fallback mock data
-        setAvailableTests([
-          {
-            id: 1,
-            title: "Python Basics Test",
-            description: "Test your Python programming skills",
-            duration_minutes: 60,
-            start_time: new Date().toISOString(),
-            end_time: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-            attempt_count: 0,
-            allow_multiple_attempts: false,
-          },
-          {
-            id: 2,
-            title: "Data Structures Challenge",
-            description: "Advanced data structures and algorithms",
-            duration_minutes: 90,
-            start_time: new Date().toISOString(),
-            end_time: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-            attempt_count: 0,
-            allow_multiple_attempts: false,
-          },
-        ]);
-      }
+        {
+          fallbackError: "Failed to fetch available tests.",
+          retries: 1,
+          timeoutMs: 8000,
+          includeAuth: false,
+        },
+      );
+      setAvailableTests(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Failed to fetch tests:", error);
-      // Fallback mock data
-      setAvailableTests([
-        {
-          id: 1,
-          title: "Python Basics Test",
-          description: "Test your Python programming skills",
-          duration_minutes: 60,
-          start_time: new Date().toISOString(),
-          end_time: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-          attempt_count: 0,
-          allow_multiple_attempts: false,
-        },
-      ]);
+      setAvailableTests([]);
+      setError(
+        error instanceof Error ? error.message : "Failed to fetch available tests.",
+      );
     } finally {
       setLoading(false);
     }
@@ -114,33 +75,29 @@ export const StudentTests: React.FC = () => {
 
   const fetchAttempts = async () => {
     try {
-      const token = getAuthToken();
-      const response = await fetch(`${API_BASE}/api/tests/my-attempts`, {
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { "Authorization": `Bearer ${token}` } : {}),
-        },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setMyAttempts(data);
-      } else {
-        // Fallback mock data
-        setMyAttempts([
-          {
-            id: 1,
-            test_id: 1,
-            test_title: "JavaScript Fundamentals",
-            status: "Submitted",
-            total_score: 80,
-            start_time: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-            end_time: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 + 45 * 60 * 1000).toISOString(),
+      const token = readStoredAuth()?.token?.trim();
+      const data = await apiRequestJson<unknown[]>(
+        `${API_BASE}/api/tests/my-attempts`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-        ]);
-      }
+        },
+        {
+          fallbackError: "Failed to fetch your test attempts.",
+          retries: 1,
+          timeoutMs: 8000,
+          includeAuth: false,
+        },
+      );
+      setMyAttempts(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Failed to fetch attempts:", error);
+      setMyAttempts([]);
+      setError((previous) =>
+        previous || (error instanceof Error ? error.message : "Failed to fetch your test attempts."),
+      );
     }
   };
 
@@ -210,6 +167,12 @@ export const StudentTests: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {error ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
 
         <AnimatePresence mode="wait">
           <motion.div
@@ -345,4 +308,3 @@ export const StudentTests: React.FC = () => {
 };
 
 export default StudentTests;
-

@@ -26,8 +26,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { readStoredAuth } from "@/lib/authSession";
 
 type QuestionType = "mcq" | "fill_blank" | "true_false";
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
 interface Question {
   id: string;
@@ -40,6 +42,8 @@ interface Question {
 
 interface QuizData {
   title: string;
+  cls: string;
+  batchId?: number | null;
   subject: string;
   description: string;
   startDate: string;
@@ -149,32 +153,76 @@ const CreateQuiz = () => {
     });
   };
 
-  const handleSaveQuiz = () => {
+  const handleSaveQuiz = async () => {
     if (!isQuizValid()) {
       toast.error("Please complete all questions and select correct answers.");
       return;
     }
 
-    const fullQuizData = {
-      ...taskData,
-      id: Date.now().toString(),
-      type: "quiz",
-      questions,
-      createdAt: new Date().toISOString(),
-      status: "scheduled",
-      students: 45,
-      submissions: 0,
+    const authSession = readStoredAuth();
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
     };
+    if (authSession?.token) {
+      headers.Authorization = `Bearer ${authSession.token}`;
+    }
 
-    // Store in localStorage for demo
-    const existingTasks = JSON.parse(
-      localStorage.getItem("faculty_tasks") || "[]",
-    );
-    existingTasks.push(fullQuizData);
-    localStorage.setItem("faculty_tasks", JSON.stringify(existingTasks));
+    try {
+      const createResponse = await fetch(`${API_BASE}/api/quizzes`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: taskData.title,
+          cls: taskData.cls,
+          batchId: taskData.batchId ?? null,
+          duration: `${taskData.duration} mins`,
+          questions: questions.map((question) => ({
+            question: question.question,
+            type: question.type,
+            options: question.options,
+            correctAnswer: question.correctAnswer,
+          })),
+        }),
+      });
 
-    toast.success("Quiz created successfully!");
-    navigate("/faculty/tasks");
+      if (!createResponse.ok) {
+        const body = (await createResponse.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error || "Failed to create quiz.");
+      }
+
+      const createdQuiz = (await createResponse.json()) as {
+        quiz_id?: number;
+      };
+
+      if (!createdQuiz.quiz_id) {
+        throw new Error("Quiz was created but no quiz id was returned.");
+      }
+
+      const publishResponse = await fetch(
+        `${API_BASE}/api/quizzes/${createdQuiz.quiz_id}/status`,
+        {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ status: "Published" }),
+        },
+      );
+
+      if (!publishResponse.ok) {
+        const body = (await publishResponse.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error || "Quiz was created but not published.");
+      }
+
+      toast.success("Quiz created successfully!");
+      navigate("/faculty/quizzes");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to save quiz.";
+      toast.error(message);
+    }
   };
 
   if (!taskData) return null;
@@ -196,7 +244,9 @@ const CreateQuiz = () => {
                 {taskData.title}
               </h1>
               <p className="text-sm text-muted-foreground">
-                {taskData.subject} • {questions.length} Questions
+                {[taskData.subject, taskData.cls, `${questions.length} Questions`]
+                  .filter(Boolean)
+                  .join(" • ")}
               </p>
             </div>
           </div>

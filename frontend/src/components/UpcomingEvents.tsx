@@ -1,64 +1,135 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Calendar, Clock, MapPin, ArrowRight, X, LogIn } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 interface EventData {
+  id?: number;
   title: string;
-  date: string;
-  time: string;
-  location: string;
-  tag: string;
-  color: string;
   description?: string;
+  event_date: string;
+  location: string;
+  category?: string;
+  status?: string;
+  image_url?: string | null;
+  max_participants?: number | null;
 }
 
-const events: EventData[] = [
+const DEFAULT_EVENTS: EventData[] = [
   {
     title: "Annual Tech Fest - Innovista 2026",
-    date: "March 15-17, 2026",
-    time: "9:00 AM - 6:00 PM",
+    event_date: "2026-03-15T09:00:00.000Z",
     location: "Main Auditorium",
-    tag: "Tech Fest",
-    color: "from-primary to-primary/60",
+    category: "Tech Fest",
+    status: "upcoming",
     description:
       "Join us for the biggest tech festival of the year featuring competitions, workshops, and guest speakers from leading tech companies.",
   },
   {
     title: "National Level Hackathon",
-    date: "March 22, 2026",
-    time: "24 Hours",
+    event_date: "2026-03-22T09:00:00.000Z",
     location: "CS Block Lab",
-    tag: "Hackathon",
-    color: "from-accent to-accent/60",
+    category: "Hackathon",
+    status: "upcoming",
     description:
       "A 24-hour coding marathon where teams compete to build innovative solutions. Prizes worth ₹50,000!",
   },
   {
     title: "Guest Lecture: AI in Healthcare",
-    date: "March 28, 2026",
-    time: "2:00 PM",
+    event_date: "2026-03-28T14:00:00.000Z",
     location: "Seminar Hall",
-    tag: "Seminar",
-    color: "from-gold to-gold/60",
+    category: "Seminar",
+    status: "upcoming",
     description:
       "Learn from industry experts about the revolutionary applications of Artificial Intelligence in modern healthcare.",
   },
   {
     title: "Sports Day 2026",
-    date: "April 5, 2026",
-    time: "8:00 AM",
+    event_date: "2026-04-05T08:00:00.000Z",
     location: "Sports Ground",
-    tag: "Sports",
-    color: "from-destructive to-destructive/60",
+    category: "Sports",
+    status: "upcoming",
     description:
       "Annual sports day featuring athletics, team sports, and fun activities for all students and faculty.",
   },
 ];
 
+const formatEventDate = (iso: string): string => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+  return date.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
+const formatEventTime = (iso: string): string => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const getEventTag = (event: EventData) => {
+  return event.category || event.status || "Event";
+};
+
+const getEventGradient = (event: EventData) => {
+  const tag = getEventTag(event).toLowerCase();
+  if (tag.includes("hackathon")) return "from-accent to-accent/60";
+  if (tag.includes("tech")) return "from-primary to-primary/60";
+  if (tag.includes("seminar")) return "from-gold to-gold/60";
+  if (tag.includes("sports")) return "from-destructive to-destructive/60";
+  if (tag.includes("conference")) return "from-indigo to-indigo/60";
+  return "from-primary to-primary/60";
+};
+
 const UpcomingEvents = () => {
+  const [events, setEvents] = useState<EventData[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<EventData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const fetchEvents = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetch(`/api/events`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to load events (${response.status})`);
+        }
+        const data = (await response.json()) as EventData[];
+        if (Array.isArray(data)) {
+          setEvents(data);
+        }
+      } catch (err) {
+        if ((err as any)?.name !== "AbortError") {
+          setError(
+            err instanceof Error ? err.message : "Failed to load upcoming events",
+          );
+          setEvents(DEFAULT_EVENTS);
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void fetchEvents();
+    return () => controller.abort();
+  }, []);
 
   const handleEventClick = (event: EventData) => {
     setSelectedEvent(event);
@@ -97,44 +168,70 @@ const UpcomingEvents = () => {
               Upcoming <span className="text-gradient">Events</span>
             </h2>
           </motion.div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {events.map((event, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, y: 30 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5, delay: i * 0.1 }}
-                className="group glass-card rounded-2xl p-6 card-hover cursor-pointer"
-                onClick={() => handleEventClick(event)}
-              >
-                <div className="flex items-start justify-between mb-4">
-                  <div
-                    className={`px-3 py-1 rounded-full text-xs font-semibold text-white bg-gradient-to-r ${event.color}`}
-                  >
-                    {event.tag}
+          {error && (
+            <div className="glass-card rounded-xl p-4 mb-6 bg-destructive/10 border border-destructive/30">
+              <p className="text-sm text-destructive">{error}</p>
+            </div>
+          )}
+          {loading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="glass-card rounded-2xl p-6 animate-pulse">
+                  <div className="h-4 bg-secondary rounded w-1/3 mb-4"></div>
+                  <div className="h-6 bg-secondary rounded w-3/4 mb-2"></div>
+                  <div className="h-4 bg-secondary rounded w-1/2"></div>
+                </div>
+              ))}
+            </div>
+          ) : events.length === 0 ? (
+            <div className="glass-card rounded-2xl p-12 text-center">
+              <Calendar className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-heading font-semibold text-foreground mb-2">
+                No upcoming events
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Check back later or ask an admin to add an event.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {events.map((event, i) => (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 30 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.5, delay: i * 0.1 }}
+                  className="group glass-card rounded-2xl p-6 card-hover cursor-pointer"
+                  onClick={() => handleEventClick(event)}
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div
+                      className={`px-3 py-1 rounded-full text-xs font-semibold text-white bg-gradient-to-r ${getEventGradient(event)}`}
+                    >
+                      {getEventTag(event)}
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:text-primary group-hover:translate-x-1 transition-all duration-300" />
                   </div>
-                  <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:text-primary group-hover:translate-x-1 transition-all duration-300" />
-                </div>
-                <h3 className="font-heading font-bold text-foreground text-lg mb-3">
-                  {event.title}
-                </h3>
-                <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-primary" />{" "}
-                    {event.date}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-primary" /> {event.time}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-primary" />{" "}
-                    {event.location}
-                  </span>
-                </div>
-              </motion.div>
-            ))}
-          </div>
+                  <h3 className="font-heading font-bold text-foreground text-lg mb-3">
+                    {event.title}
+                  </h3>
+                  <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-primary" /> {formatEventDate(event.event_date)}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-primary" /> {formatEventTime(event.event_date)}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <MapPin className="w-3.5 h-3.5 text-primary" />{" "}
+                      {event.location}
+                    </span>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

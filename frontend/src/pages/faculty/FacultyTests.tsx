@@ -1,13 +1,12 @@
-import React from "react";
 import FacultyLayout from "@/components/FacultyLayout";
-import { FacultyTestManagement as TestManagement } from "@/components/FacultyTestManagement";
+import FacultyTaskHub from "@/components/FacultyTaskHub";
 
-const FacultyTestManagement: React.FC = () => {
+const FacultyTests = () => {
   return (
-    <FacultyLayout>
-      <TestManagement />
+    <FacultyLayout title="Coding Tests">
+      <FacultyTaskHub mode="test" />
     </FacultyLayout>
   );
 };
 
-export default FacultyTestManagement;
+export default FacultyTests;

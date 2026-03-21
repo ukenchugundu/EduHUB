@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { CheckCircle, Clock, FileText } from "lucide-react";
 import StudentLayout from "@/components/StudentLayout";
 import SubmitAssignmentDialog from "@/components/SubmitAssignmentDialog";
+import { readStoredAuth } from "@/lib/authSession";
 
 interface ApiErrorResponse {
   error?: string;
@@ -35,7 +36,6 @@ interface StudentAssignmentSubmission {
 }
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-const STUDENT_ID_STORAGE_KEY = "eduhub_student_id";
 
 const withTimeoutSignal = (
   timeoutMs = 6000,
@@ -51,22 +51,6 @@ const withTimeoutSignal = (
     clear: () => clearTimeout(timeout),
     abort: () => controller.abort(),
   };
-};
-
-const getOrCreateStudentId = (): string => {
-  const fallback = `student-${Math.random().toString(36).slice(2, 10)}`;
-
-  try {
-    const existing = localStorage.getItem(STUDENT_ID_STORAGE_KEY);
-    if (existing && existing.trim()) {
-      return existing;
-    }
-
-    localStorage.setItem(STUDENT_ID_STORAGE_KEY, fallback);
-    return fallback;
-  } catch {
-    return fallback;
-  }
 };
 
 const readApiErrorMessage = async (
@@ -167,7 +151,10 @@ const formatDateTime = (value: string): string => {
 
 const StudentAssignments = () => {
   const queryClient = useQueryClient();
-  const [studentId] = useState<string>(() => getOrCreateStudentId());
+  const [studentId] = useState<string>(() => {
+    const auth = readStoredAuth();
+    return auth?.studentId || auth?.rollNumber || "";
+  });
 
   const assignmentsQuery = useQuery<Assignment[], Error>({
     queryKey: ["assignments"],
@@ -181,6 +168,7 @@ const StudentAssignments = () => {
   const submissionsQuery = useQuery<StudentAssignmentSubmission[], Error>({
     queryKey: ["student-assignment-submissions", studentId],
     queryFn: ({ signal }) => fetchStudentSubmissions(studentId, signal),
+    enabled: studentId.trim().length > 0,
     refetchInterval: 5000,
     refetchIntervalInBackground: true,
     staleTime: 0,
@@ -209,7 +197,9 @@ const StudentAssignments = () => {
 
   const isLoading = assignmentsQuery.isLoading || submissionsQuery.isLoading;
   const errorMessage =
-    assignmentsQuery.error?.message ?? submissionsQuery.error?.message ?? "";
+    assignmentsQuery.error?.message ??
+    submissionsQuery.error?.message ??
+    (studentId ? "" : "Student identity is missing. Sign in again.");
 
   return (
     <StudentLayout>

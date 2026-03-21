@@ -52,7 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_batches_department_id ON batches(department_id);
 -- Insert sample departments
 INSERT INTO departments (name, code) VALUES 
     ('Computer Science Engineering', 'CSE'),
-    ('Computer Science & Design', 'CSD'),
+    ('Computer Science and Data Science', 'CSD'),
     ('Information Technology', 'IT'),
     ('Electronics & Communication', 'ECE'),
     ('Mechanical Engineering', 'ME')
@@ -139,4 +139,3 @@ FROM (VALUES
 ) b(name, year, sem)
 CROSS JOIN (SELECT id FROM departments WHERE code = 'ME' LIMIT 1) d
 ON CONFLICT (name, department_id, academic_year) DO NOTHING;
-

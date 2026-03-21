@@ -1,5 +1,4 @@
 import { Pool } from "pg";
-import Redis from "ioredis";
 
 interface SystemMetrics {
   timestamp: Date;
@@ -19,13 +18,11 @@ interface PerformanceAlert {
 
 export class SystemMonitoringService {
   private db: Pool;
-  private redis: Redis;
   private metrics: SystemMetrics[] = [];
   private alerts: PerformanceAlert[] = [];
 
-  constructor(db: Pool, redis: Redis) {
+  constructor(db: Pool) {
     this.db = db;
-    this.redis = redis;
     this.startMonitoring();
   }
 
@@ -45,7 +42,7 @@ export class SystemMonitoringService {
     try {
       const timestamp = new Date();
 
-      // Get active users from Redis
+      // Get active users (in-memory placeholder)
       const activeUsers = await this.getActiveUserCount();
 
       // Get database metrics
@@ -65,13 +62,6 @@ export class SystemMonitoringService {
 
       this.metrics.push(metrics);
 
-      // Store in Redis for real-time dashboard
-      await this.redis.setex(
-        "system:metrics:latest",
-        300,
-        JSON.stringify(metrics),
-      );
-
       // Check for alerts
       await this.checkAlerts(metrics);
     } catch (error) {
@@ -80,8 +70,7 @@ export class SystemMonitoringService {
   }
 
   private async getActiveUserCount(): Promise<number> {
-    const keys = await this.redis.keys("session:*");
-    return keys.length;
+    return 0;
   }
 
   private async getDatabaseMetrics(): Promise<{
@@ -160,8 +149,9 @@ export class SystemMonitoringService {
     // Store alerts
     for (const alert of alerts) {
       this.alerts.push(alert);
-      await this.redis.lpush("system:alerts", JSON.stringify(alert));
-      await this.redis.ltrim("system:alerts", 0, 99); // Keep last 100 alerts
+      if (this.alerts.length > 100) {
+        this.alerts = this.alerts.slice(-100);
+      }
     }
   }
 
@@ -173,8 +163,9 @@ export class SystemMonitoringService {
 
   // API methods
   async getCurrentMetrics(): Promise<SystemMetrics | null> {
-    const cached = await this.redis.get("system:metrics:latest");
-    return cached ? JSON.parse(cached) : null;
+    return this.metrics.length > 0
+      ? this.metrics[this.metrics.length - 1]
+      : null;
   }
 
   async getMetricsHistory(hours: number = 1): Promise<SystemMetrics[]> {
@@ -183,8 +174,8 @@ export class SystemMonitoringService {
   }
 
   async getRecentAlerts(limit: number = 10): Promise<PerformanceAlert[]> {
-    const alerts = await this.redis.lrange("system:alerts", 0, limit - 1);
-    return alerts.map((a) => JSON.parse(a));
+    const start = Math.max(0, this.alerts.length - limit);
+    return this.alerts.slice(start).reverse();
   }
 
   // Performance optimization recommendations

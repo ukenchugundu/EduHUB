@@ -1,5 +1,9 @@
 import { Request, Response } from "express";
 import pool from "../utils/db";
+import {
+  getAcademicTableNames,
+  getStudentBatchIdForAuthUser,
+} from "../utils/studentPortalAccess";
 
 const WEEKDAY_LABELS: Record<number, string> = {
   1: "Monday",
@@ -37,30 +41,7 @@ const isUndefinedTableError = (error: unknown): boolean =>
   (error as { code?: string }).code === UNDEFINED_TABLE_ERROR_CODE;
 
 const getStudentBatchId = async (userId?: number): Promise<number | null> => {
-  if (!userId) {
-    return null;
-  }
-
-  for (const tableName of ["batch_students", "batch_student"] as const) {
-    try {
-      const result = await pool.query<{ batch_id: number }>(
-        `SELECT batch_id FROM ${tableName} WHERE student_id = $1 LIMIT 1`,
-        [userId],
-      );
-
-      if (result.rows.length > 0) {
-        return Number(result.rows[0].batch_id);
-      }
-    } catch (error) {
-      if (isUndefinedTableError(error)) {
-        continue;
-      }
-
-      throw error;
-    }
-  }
-
-  return null;
+  return getStudentBatchIdForAuthUser(pool, userId);
 };
 
 const toLocalDateString = (date: Date): string => {
@@ -131,32 +112,40 @@ const buildStudentScheduleItem = (entry: TimetableEntryRow, sessionDate: Date, n
   };
 };
 
-const timetableSelect = `
-  SELECT
-    te.id,
-    te.batch_id,
-    te.faculty_id,
-    te.subject,
-    te.topic,
-    te.room,
-    te.weekday,
-    te.start_time,
-    te.end_time,
-    b.name AS batch_name,
-    d.name AS department_name,
-    d.code AS department_code,
-    au.full_name AS faculty_name,
-    au.designation AS faculty_designation
-  FROM timetable_entries te
-  JOIN batches b ON te.batch_id = b.id
-  JOIN departments d ON b.department_id = d.id
-  LEFT JOIN auth_users au ON te.faculty_id = au.auth_user_id
-`;
+const getTimetableSelect = async (): Promise<string | null> => {
+  const { batchTableName, departmentTableName } = await getAcademicTableNames(pool);
+  if (!batchTableName || !departmentTableName) {
+    return null;
+  }
+
+  return `
+    SELECT
+      te.id,
+      te.batch_id,
+      te.faculty_id,
+      te.subject,
+      te.topic,
+      te.room,
+      te.weekday,
+      te.start_time,
+      te.end_time,
+      b.name AS batch_name,
+      d.name AS department_name,
+      d.code AS department_code,
+      au.full_name AS faculty_name,
+      au.designation AS faculty_designation
+    FROM timetable_entries te
+    JOIN ${batchTableName} b ON te.batch_id = b.id
+    JOIN ${departmentTableName} d ON b.department_id = d.id
+    LEFT JOIN auth_users au ON te.faculty_id = au.auth_user_id
+  `;
+};
 
 export const getBatchTimetableEntries = async (req: Request, res: Response) => {
   try {
     const { role } = (req as any).user ?? {};
     const batchId = Number(req.params.batchId);
+    const timetableSelect = await getTimetableSelect();
 
     if (role !== "admin" && role !== "faculty") {
       return res.status(403).json({ error: "Only admin or faculty can view batch timetables" });
@@ -164,6 +153,9 @@ export const getBatchTimetableEntries = async (req: Request, res: Response) => {
 
     if (!Number.isInteger(batchId) || batchId <= 0) {
       return res.status(400).json({ error: "Valid batchId is required" });
+    }
+    if (!timetableSelect) {
+      return res.json([]);
     }
 
     const result = await pool.query<TimetableEntryRow>(
@@ -184,6 +176,8 @@ export const createTimetableEntry = async (req: Request, res: Response) => {
   try {
     const { userId, role } = (req as any).user ?? {};
     const { batchId, facultyId, subject, topic, room, weekday, startTime, endTime } = req.body;
+    const timetableSelect = await getTimetableSelect();
+    const { batchTableName } = await getAcademicTableNames(pool);
 
     if (role !== "admin") {
       return res.status(403).json({ error: "Only admin can create timetable entries" });
@@ -217,9 +211,12 @@ export const createTimetableEntry = async (req: Request, res: Response) => {
     if (toComparableTime(endTime) <= toComparableTime(startTime)) {
       return res.status(400).json({ error: "endTime must be later than startTime" });
     }
+    if (!batchTableName || !timetableSelect) {
+      return res.status(500).json({ error: "Batch timetable tables are not configured" });
+    }
 
     const batchResult = await pool.query(
-      "SELECT id FROM batches WHERE id = $1 LIMIT 1",
+      `SELECT id FROM ${batchTableName} WHERE id = $1 LIMIT 1`,
       [parsedBatchId],
     );
     if (batchResult.rows.length === 0) {
@@ -312,11 +309,220 @@ export const createTimetableEntry = async (req: Request, res: Response) => {
   }
 };
 
+const AUTO_GENERATE_SUBJECTS = [
+  "Data Structures & Algorithms",
+  "Database Management Systems",
+  "Operating Systems",
+  "Computer Networks",
+  "Software Engineering",
+  "Machine Learning",
+  "Artificial Intelligence",
+  "Web Technologies",
+  "Cloud Computing",
+  "Cybersecurity",
+];
+
+const AUTO_GENERATE_SLOTS = [
+  { startTime: "08:30:00", endTime: "09:30:00" },
+  { startTime: "09:30:00", endTime: "10:30:00" },
+  { startTime: "10:45:00", endTime: "11:45:00" },
+  { startTime: "11:45:00", endTime: "12:45:00" },
+  { startTime: "13:30:00", endTime: "14:30:00" },
+  { startTime: "14:30:00", endTime: "15:30:00" },
+];
+
+const WEEKDAY_KEYWORDS: Record<string, number> = {
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+  sunday: 7,
+};
+
+export const clearBatchTimetableEntries = async (req: Request, res: Response) => {
+  try {
+    const { role } = (req as any).user ?? {};
+    if (role !== "admin") {
+      return res.status(403).json({ error: "Only admin can clear timetable entries" });
+    }
+
+    const batchId = Number(req.params.batchId);
+    if (!Number.isInteger(batchId) || batchId <= 0) {
+      return res.status(400).json({ error: "Valid batchId is required" });
+    }
+
+    await pool.query(
+      `DELETE FROM timetable_entries WHERE batch_id = $1`,
+      [batchId],
+    );
+
+    return res.status(204).send();
+  } catch (error) {
+    console.error("Error clearing batch timetable entries:", error);
+    return res.status(500).json({ error: "Failed to clear batch timetable entries" });
+  }
+};
+
+export const autoGenerateBatchTimetable = async (req: Request, res: Response) => {
+  try {
+    const { role } = (req as any).user ?? {};
+    const timetableSelect = await getTimetableSelect();
+    const { batchTableName } = await getAcademicTableNames(pool);
+    if (role !== "admin") {
+      return res.status(403).json({ error: "Only admin can auto-generate timetables" });
+    }
+
+    const batchId = Number(req.params.batchId);
+    if (!Number.isInteger(batchId) || batchId <= 0) {
+      return res.status(400).json({ error: "Valid batchId is required" });
+    }
+
+    const { query = "", clearExisting = true } = req.body ?? {};
+    const normalizedQuery = String(query ?? "").toLowerCase();
+    if (!batchTableName || !timetableSelect) {
+      return res.status(500).json({ error: "Batch timetable tables are not configured" });
+    }
+
+    // Verify batch exists
+    const batchResult = await pool.query(
+      `SELECT id FROM ${batchTableName} WHERE id = $1 LIMIT 1`,
+      [batchId],
+    );
+    if (batchResult.rows.length === 0) {
+      return res.status(404).json({ error: "Batch not found" });
+    }
+
+    if (clearExisting) {
+      await pool.query(
+        `DELETE FROM timetable_entries WHERE batch_id = $1`,
+        [batchId],
+      );
+    }
+
+    // Determine subjects to use based on query keywords (fallback to all)
+    const preferredSubjects = AUTO_GENERATE_SUBJECTS.filter((subject) => {
+      const lower = subject.toLowerCase();
+      return normalizedQuery.includes(lower) || normalizedQuery.includes(lower.split(" ")[0]);
+    });
+    const subjects = preferredSubjects.length > 0 ? preferredSubjects : AUTO_GENERATE_SUBJECTS;
+
+    // Determine weekdays to generate
+    const selectedWeekdays = Object.entries(WEEKDAY_KEYWORDS)
+      .filter(([word]) => normalizedQuery.includes(word))
+      .map(([, day]) => day);
+
+    const weekdays = selectedWeekdays.length > 0 ? selectedWeekdays : [1, 2, 3, 4, 5];
+
+    // Fetch faculty list to assign sessions
+    const facultyResult = await pool.query<{ auth_user_id: number }>(
+      `SELECT auth_user_id FROM auth_users WHERE role = 'faculty' ORDER BY full_name`,
+    );
+    const facultyIds = facultyResult.rows.map((row) => Number(row.auth_user_id));
+
+    if (facultyIds.length === 0) {
+      return res.status(400).json({ error: "No faculty accounts available for timetable generation" });
+    }
+
+    // Load existing entries for conflict checking (excluding this batch)
+    const existingEntries = await pool.query<
+      { faculty_id: number; weekday: number; start_time: string; end_time: string }
+    >(
+      `SELECT faculty_id, weekday, start_time, end_time
+       FROM timetable_entries
+       WHERE batch_id != $1
+         AND weekday = ANY($2::int[])
+         AND start_time = ANY($3::time[])
+         AND end_time = ANY($4::time[])`,
+      [batchId, weekdays, AUTO_GENERATE_SLOTS.map((s) => s.startTime), AUTO_GENERATE_SLOTS.map((s) => s.endTime)],
+    );
+
+    const occupied = new Set(
+      existingEntries.rows.map(
+        (entry) => `${entry.faculty_id}-${entry.weekday}-${entry.start_time}-${entry.end_time}`,
+      ),
+    );
+
+    const createdEntries: TimetableEntryRow[] = [];
+
+    let subjectIndex = 0;
+    let facultyIndex = 0;
+
+    for (const weekday of weekdays) {
+      for (const slot of AUTO_GENERATE_SLOTS) {
+        const subject = subjects[subjectIndex % subjects.length];
+        subjectIndex += 1;
+
+        // Attempt to find an available faculty member
+        let assignedFacultyId = facultyIds[facultyIndex % facultyIds.length];
+        let attempts = 0;
+        while (
+          attempts < facultyIds.length &&
+          occupied.has(`${assignedFacultyId}-${weekday}-${slot.startTime}-${slot.endTime}`)
+        ) {
+          facultyIndex += 1;
+          attempts += 1;
+          assignedFacultyId = facultyIds[facultyIndex % facultyIds.length];
+        }
+
+        facultyIndex += 1;
+
+        const insertResult = await pool.query<{ id: number }>(
+          `INSERT INTO timetable_entries (
+             batch_id,
+             faculty_id,
+             weekday,
+             subject,
+             topic,
+             room,
+             start_time,
+             end_time,
+             created_by
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id`,
+          [
+            batchId,
+            assignedFacultyId,
+            weekday,
+            subject,
+            null,
+            null,
+            slot.startTime,
+            slot.endTime,
+            null,
+          ],
+        );
+
+        const created = await pool.query<TimetableEntryRow>(
+          `${timetableSelect}
+           WHERE te.id = $1
+           LIMIT 1`,
+          [insertResult.rows[0].id],
+        );
+
+        if (created.rows.length > 0) {
+          createdEntries.push(withWeekdayLabel(created.rows[0]));
+        }
+      }
+    }
+
+    return res.json(createdEntries);
+  } catch (error) {
+    console.error("Error auto-generating timetable entries:", error);
+    return res.status(500).json({ error: "Failed to auto-generate timetable entries" });
+  }
+};
+
 export const getFacultyTodayTimetable = async (req: Request, res: Response) => {
   try {
     const { userId, role } = (req as any).user ?? {};
+    const timetableSelect = await getTimetableSelect();
     if (role !== "faculty" && role !== "admin") {
       return res.status(403).json({ error: "Only faculty or admin can view faculty timetables" });
+    }
+    if (!timetableSelect) {
+      return res.json([]);
     }
 
     const now = new Date();
@@ -349,8 +555,12 @@ export const getFacultyTodayTimetable = async (req: Request, res: Response) => {
 export const getFacultyNextTimetableClass = async (req: Request, res: Response) => {
   try {
     const { userId, role } = (req as any).user ?? {};
+    const timetableSelect = await getTimetableSelect();
     if (role !== "faculty" && role !== "admin") {
       return res.status(403).json({ error: "Only faculty or admin can view faculty timetables" });
+    }
+    if (!timetableSelect) {
+      return res.json({ message: "No timetable entries found" });
     }
 
     const now = new Date();
@@ -410,10 +620,11 @@ export const getStudentTimetableSchedule = async (req: Request, res: Response) =
     const { userId } = (req as any).user ?? {};
     const now = new Date();
     const todayWeekday = getIsoWeekday(now);
+    const timetableSelect = await getTimetableSelect();
 
     const batchId = await getStudentBatchId(userId);
 
-    if (batchId === null) {
+    if (batchId === null || !timetableSelect) {
       return res.json({ today: [], upcoming: [] });
     }
 

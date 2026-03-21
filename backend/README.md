@@ -62,4 +62,4 @@ API note:
 - Password reset request throttling
 - Password reset submission throttling and lockout after repeated invalid token attempts
 
-These controls are currently in-memory for local/project scope. In a multi-instance deployment, move them to Redis or another shared store.
+These controls are currently in-memory for local/project scope. In a multi-instance deployment, move them to a shared store.

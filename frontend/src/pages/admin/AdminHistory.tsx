@@ -1,87 +1,50 @@
 import { useEffect, useMemo, useState } from "react";
-import AdminLayout from "@/components/AdminLayout";
-import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
   AlertCircle,
-  Calendar,
   Clock,
+  Loader2,
   Search,
   Shield,
   TrendingUp,
   Users,
   X,
 } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import AdminLayout from "@/components/AdminLayout";
+import { readStoredAuth } from "@/lib/authSession";
+
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
 type HistoryIconName = "Users" | "Shield" | "AlertCircle" | "Clock";
 
 interface HistoryItem {
-  id: string;
+  id: number;
+  actorUserId: number | null;
   action: string;
   description: string;
-  date: string;
   icon: HistoryIconName;
   createdAt: string;
 }
 
-const HISTORY_STORAGE_KEY = "admin_history";
+const requestHistory = async (): Promise<HistoryItem[]> => {
+  const token = readStoredAuth()?.token?.trim();
+  const response = await fetch(`${API_BASE}/api/admin/history`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
 
-const mockHistory: HistoryItem[] = [
-  {
-    id: "m1",
-    action: "User Created",
-    description: "Dr. Smith (Faculty) added to CSE department",
-    date: "2024-12-15",
-    icon: "Users",
-    createdAt: "2024-12-15T10:00:00Z",
-  },
-  {
-    id: "m2",
-    action: "Settings Updated",
-    description: "Changed password policy for all users",
-    date: "2024-12-14",
-    icon: "Shield",
-    createdAt: "2024-12-14T14:00:00Z",
-  },
-  {
-    id: "m3",
-    action: "System Backup",
-    description: "Completed automated daily backup",
-    date: "2024-12-13",
-    icon: "AlertCircle",
-    createdAt: "2024-12-13T09:00:00Z",
-  },
-];
-
-const sortHistoryItems = (items: HistoryItem[]) =>
-  [...items].sort(
-    (left, right) =>
-      new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
-  );
-
-const normalizeIconName = (icon: unknown): HistoryIconName => {
-  switch (icon) {
-    case "Users":
-    case "Shield":
-    case "AlertCircle":
-    case "Clock":
-      return icon;
-    default:
-      return "Clock";
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as
+      | { error?: string; message?: string }
+      | null;
+    throw new Error(body?.error || body?.message || "Failed to load admin history.");
   }
-};
 
-const normalizeHistoryItem = (
-  item: Partial<HistoryItem>,
-  index: number,
-): HistoryItem => ({
-  id: String(item.id ?? `history-${index + 1}`),
-  action: String(item.action ?? "Admin Activity"),
-  description: String(item.description ?? "No description provided."),
-  date: String(item.date ?? item.createdAt ?? new Date().toISOString()),
-  icon: normalizeIconName(item.icon),
-  createdAt: String(item.createdAt ?? new Date().toISOString()),
-});
+  const payload = (await response.json()) as { history?: HistoryItem[] };
+  return Array.isArray(payload.history) ? payload.history : [];
+};
 
 const getIcon = (iconName: HistoryIconName) => {
   switch (iconName) {
@@ -96,45 +59,12 @@ const getIcon = (iconName: HistoryIconName) => {
   }
 };
 
-const getAccentStyles = (iconName: HistoryIconName) => {
-  switch (iconName) {
-    case "Users":
-      return {
-        container: "bg-primary/10 text-primary",
-        badge: "bg-primary/15 text-primary",
-        label: "User Action",
-      };
-    case "Shield":
-      return {
-        container: "bg-gold/15 text-gold",
-        badge: "bg-gold/15 text-gold",
-        label: "Security",
-      };
-    case "AlertCircle":
-      return {
-        container: "bg-accent/15 text-accent",
-        badge: "bg-accent/15 text-accent",
-        label: "System",
-      };
-    default:
-      return {
-        container: "bg-secondary text-foreground",
-        badge: "bg-secondary text-foreground",
-        label: "General",
-      };
-  }
-};
-
 const formatDate = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return "-";
   }
-  return date.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return date.toLocaleDateString();
 };
 
 const formatDateTime = (value: string) => {
@@ -149,26 +79,38 @@ const AdminHistory = () => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedItem, setSelectedItem] = useState<HistoryItem | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadHistory = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const rows = await requestHistory();
+      setHistory(
+        rows
+          .slice()
+          .sort(
+            (left, right) =>
+              new Date(right.createdAt).getTime() -
+              new Date(left.createdAt).getTime(),
+          ),
+      );
+    } catch (loadError) {
+      setHistory([]);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to load admin history.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    try {
-      const storedHistory = JSON.parse(
-        localStorage.getItem(HISTORY_STORAGE_KEY) || "[]",
-      ) as Partial<HistoryItem>[];
-
-      if (!Array.isArray(storedHistory) || storedHistory.length === 0) {
-        setHistory(sortHistoryItems(mockHistory));
-        return;
-      }
-
-      setHistory(
-        sortHistoryItems(
-          storedHistory.map((item, index) => normalizeHistoryItem(item, index)),
-        ),
-      );
-    } catch {
-      setHistory(sortHistoryItems(mockHistory));
-    }
+    void loadHistory();
   }, []);
 
   const filteredHistory = useMemo(() => {
@@ -191,21 +133,28 @@ const AdminHistory = () => {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl gradient-gold flex items-center justify-center">
-              <TrendingUp className="w-5 h-5 text-white" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl gradient-gold">
+              <TrendingUp className="h-5 w-5 text-white" />
             </div>
             <div>
               <h1 className="text-2xl font-heading font-bold text-foreground">
                 Admin History Log
               </h1>
               <p className="text-sm text-muted-foreground">
-                Review platform actions, security events, and recent admin activity.
+                Recent admin activity pulled from the database-backed activity log.
               </p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => void loadHistory()}
+            className="rounded-xl bg-secondary px-4 py-2 text-sm text-foreground transition-colors hover:bg-secondary/80"
+          >
+            Refresh
+          </button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {[
             {
               label: "Total Entries",
@@ -231,111 +180,96 @@ const AdminHistory = () => {
               icon: Shield,
               gradient: "from-destructive to-destructive/60",
             },
-          ].map((card, index) => (
-            <motion.div
+          ].map((card) => (
+            <div
               key={card.label}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.08 }}
-              className="glass-card rounded-2xl p-5 border border-border/50"
+              className="glass-card rounded-2xl border border-border/50 p-5"
             >
               <div
-                className={`w-10 h-10 rounded-xl bg-gradient-to-br ${card.gradient} flex items-center justify-center mb-3`}
+                className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${card.gradient}`}
               >
-                <card.icon className="w-5 h-5 text-white" />
+                <card.icon className="h-5 w-5 text-white" />
               </div>
               <p className="text-xs text-muted-foreground">{card.label}</p>
-              <p className="text-xl font-heading font-bold text-foreground mt-1 break-words">
+              <p className="mt-1 break-words text-xl font-heading font-bold text-foreground">
                 {card.value}
               </p>
-            </motion.div>
+            </div>
           ))}
         </div>
 
-        <div className="glass-card rounded-2xl p-4 border border-border/50">
+        <div className="glass-card rounded-2xl border border-border/50 p-4">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
               placeholder="Search logs by action or description"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              className="w-full rounded-xl border border-border/70 bg-background/60 py-2.5 pl-10 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+              className="w-full rounded-xl border border-border/70 bg-background/60 py-2.5 pl-10 pr-4 text-sm text-foreground placeholder:text-muted-foreground"
             />
           </div>
         </div>
 
-        {filteredHistory.length === 0 ? (
-          <div className="glass-card rounded-2xl p-12 text-center border border-border/50">
-            <div className="w-14 h-14 rounded-2xl bg-secondary/50 flex items-center justify-center mx-auto mb-4">
-              <Clock className="w-7 h-7 text-muted-foreground" />
-            </div>
+        {error ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="glass-card rounded-2xl border border-border/50 p-12 text-center">
+            <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">
+              Loading admin activity from the database...
+            </p>
+          </div>
+        ) : filteredHistory.length === 0 ? (
+          <div className="glass-card rounded-2xl border border-border/50 p-12 text-center">
+            <Clock className="mx-auto mb-4 h-8 w-8 text-muted-foreground" />
             <h3 className="text-lg font-heading font-semibold text-foreground">
               No history entries found
             </h3>
-            <p className="text-sm text-muted-foreground mt-2">
-              Try a different search term or wait for new admin activity to be logged.
+            <p className="mt-2 text-sm text-muted-foreground">
+              This page no longer uses local mock history, so only real logged admin
+              actions will appear here.
             </p>
           </div>
         ) : (
           <div className="grid gap-4">
-            {filteredHistory.map((item, index) => {
+            {filteredHistory.map((item) => {
               const Icon = getIcon(item.icon);
-              const accent = getAccentStyles(item.icon);
-
               return (
-                <motion.div
+                <div
                   key={item.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.06 }}
-                  className="glass-card rounded-2xl p-5 border border-border/50 group card-hover"
+                  className="glass-card rounded-2xl border border-border/50 p-5"
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="flex items-start gap-4 min-w-0">
-                      <div
-                        className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${accent.container}`}
-                      >
-                        <Icon className="w-5 h-5" />
+                    <div className="flex items-start gap-4">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                        <Icon className="h-5 w-5" />
                       </div>
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="font-heading font-semibold text-foreground group-hover:text-primary transition-colors">
-                            {item.action}
-                          </h3>
-                          <span
-                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ${accent.badge}`}
-                          >
-                            {accent.label}
-                          </span>
-                        </div>
-                        <p className="text-sm text-muted-foreground mt-1">
+                      <div>
+                        <h3 className="font-heading font-semibold text-foreground">
+                          {item.action}
+                        </h3>
+                        <p className="mt-1 text-sm text-muted-foreground">
                           {item.description}
                         </p>
-                        <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground mt-3">
-                          <span className="inline-flex items-center gap-1">
-                            <Calendar className="w-3.5 h-3.5" />
-                            {formatDate(item.date)}
-                          </span>
-                          <span className="inline-flex items-center gap-1">
-                            <Clock className="w-3.5 h-3.5" />
-                            {formatDateTime(item.createdAt)}
-                          </span>
-                        </div>
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          {formatDateTime(item.createdAt)}
+                        </p>
                       </div>
                     </div>
-
-                    <div className="flex items-center justify-end">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedItem(item)}
-                        className="rounded-xl px-3 py-2 text-sm bg-secondary text-foreground hover:bg-secondary/70 transition-colors"
-                      >
-                        Details
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedItem(item)}
+                      className="rounded-xl bg-secondary px-3 py-2 text-sm text-foreground transition-colors hover:bg-secondary/70"
+                    >
+                      Details
+                    </button>
                   </div>
-                </motion.div>
+                </div>
               );
             })}
           </div>
@@ -348,55 +282,56 @@ const AdminHistory = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
             onClick={() => setSelectedItem(null)}
           >
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              initial={{ opacity: 0, scale: 0.95, y: 16 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              exit={{ opacity: 0, scale: 0.95, y: 16 }}
               onClick={(event) => event.stopPropagation()}
-              className="w-full max-w-lg glass-card rounded-2xl p-6 border border-border/50"
+              className="glass-card w-full max-w-lg rounded-2xl border border-border/50 p-6"
             >
-              <div className="flex items-start justify-between gap-4 mb-6">
+              <div className="mb-6 flex items-start justify-between gap-4">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                     Activity Details
                   </p>
-                  <h2 className="text-xl font-heading font-bold text-foreground mt-2">
+                  <h2 className="mt-2 text-xl font-heading font-bold text-foreground">
                     {selectedItem.action}
                   </h2>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setSelectedItem(null)}
-                  className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="h-5 w-5" />
                 </button>
               </div>
 
               <div className="space-y-4 text-sm">
                 <div className="rounded-xl bg-secondary/40 p-4">
-                  <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">
                     Description
                   </p>
-                  <p className="text-foreground mt-2">{selectedItem.description}</p>
+                  <p className="mt-2 text-foreground">{selectedItem.description}</p>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="rounded-xl bg-secondary/40 p-4">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">
-                      Action Date
+                    <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                      Logged At
                     </p>
-                    <p className="text-foreground font-medium mt-2">
-                      {formatDate(selectedItem.date)}
+                    <p className="mt-2 font-medium text-foreground">
+                      {formatDateTime(selectedItem.createdAt)}
                     </p>
                   </div>
                   <div className="rounded-xl bg-secondary/40 p-4">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">
-                      Logged At
+                    <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                      Actor User ID
                     </p>
-                    <p className="text-foreground font-medium mt-2">
-                      {formatDateTime(selectedItem.createdAt)}
+                    <p className="mt-2 font-medium text-foreground">
+                      {selectedItem.actorUserId ?? "System"}
                     </p>
                   </div>
                 </div>

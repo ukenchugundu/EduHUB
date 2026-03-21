@@ -11,6 +11,7 @@ import {
   Pause,
   Play,
 } from "lucide-react";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
@@ -49,7 +50,8 @@ interface ClassSchedule {
 const getAuthToken = (): string | null => {
   try {
     const authData = localStorage.getItem("eduhub_auth");
-    return authData ? JSON.parse(authData).token ?? null : null;
+    const token = authData ? (JSON.parse(authData).token as string | undefined) : undefined;
+    return token && token.trim() ? token : null;
   } catch {
     return null;
   }
@@ -57,16 +59,18 @@ const getAuthToken = (): string | null => {
 
 const requestJson = async <T,>(url: string, fallbackError: string): Promise<T> => {
   const token = getAuthToken();
-  const response = await fetch(url, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
-
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error((body as { error?: string }).error || fallbackError);
-  }
-
-  return body as T;
+  return apiRequestJson<T>(
+    url,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    },
+    {
+      fallbackError,
+      retries: 1,
+      timeoutMs: 8000,
+      includeAuth: false,
+    },
+  );
 };
 
 const toComparableTime = (value?: string | null): string => {
@@ -163,32 +167,47 @@ const FacultyCommandCenter = () => {
     }, 60000);
 
     const loadSchedule = async () => {
-      try {
-        setError(null);
-        const [todayData, nextData] = await Promise.all([
-          requestJson<FacultyScheduleSession[]>(
-            `${API_BASE}/api/timetable/faculty/today`,
-            "Failed to load today's schedule.",
-          ),
-          requestJson<FacultyNextClass | { message: string }>(
-            `${API_BASE}/api/timetable/faculty/next`,
-            "Failed to load next class.",
-          ),
-        ]);
+      setError(null);
+      const [todayResult, nextResult] = await Promise.allSettled([
+        requestJson<FacultyScheduleSession[]>(
+          `${API_BASE}/api/timetable/faculty/today`,
+          "Failed to load today's schedule.",
+        ),
+        requestJson<FacultyNextClass | { message: string }>(
+          `${API_BASE}/api/timetable/faculty/next`,
+          "Failed to load next class.",
+        ),
+      ]);
 
-        setTodaySessions(todayData);
-        setNextSession(
-          "id" in nextData && typeof nextData.id === "number" ? nextData : null,
-        );
-      } catch (loadError) {
-        setError(
-          loadError instanceof Error
-            ? loadError.message
+      setTodaySessions(
+        todayResult.status === "fulfilled" && Array.isArray(todayResult.value)
+          ? todayResult.value
+          : [],
+      );
+      setNextSession(
+        nextResult.status === "fulfilled" &&
+          "id" in nextResult.value &&
+          typeof nextResult.value.id === "number"
+          ? nextResult.value
+          : null,
+      );
+
+      const errors = [todayResult, nextResult]
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) =>
+          result.reason instanceof Error
+            ? result.reason.message
             : "Failed to load schedule.",
         );
-      } finally {
-        setLoading(false);
-      }
+
+      setError(
+        errors.length === 0
+          ? null
+          : errors.length === 2
+            ? errors[0]
+            : "Part of the schedule could not refresh. Showing available data.",
+      );
+      setLoading(false);
     };
 
     void loadSchedule();

@@ -1,10 +1,10 @@
 import FacultyLayout from "@/components/FacultyLayout";
-import FacultyTaskManager from "@/components/FacultyTaskManager";
+import FacultyTaskHub from "@/components/FacultyTaskHub";
 
 const FacultyTasks = () => {
   return (
-    <FacultyLayout>
-      <FacultyTaskManager />
+    <FacultyLayout title="Task Management">
+      <FacultyTaskHub mode="all" />
     </FacultyLayout>
   );
 };

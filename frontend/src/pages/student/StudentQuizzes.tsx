@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { readStoredAuth } from "@/lib/authSession";
 
 interface ApiErrorResponse {
   error?: string;
@@ -32,6 +33,17 @@ interface Quiz {
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const QUIZZES_API_URL = `${API_BASE}/api/quizzes`;
+
+const getStudentAuthHeaders = (): HeadersInit => {
+  const session = readStoredAuth();
+  if (!session?.token) {
+    return {};
+  }
+
+  return {
+    Authorization: `Bearer ${session.token}`,
+  };
+};
 
 const withTimeoutSignal = (
   timeoutMs = 5000,
@@ -69,7 +81,10 @@ const fetchQuizzes = async (signal?: AbortSignal): Promise<Quiz[]> => {
   }
 
   try {
-    const response = await fetch(QUIZZES_API_URL, { signal: request.signal });
+    const response = await fetch(QUIZZES_API_URL, {
+      signal: request.signal,
+      headers: getStudentAuthHeaders(),
+    });
     if (!response.ok) {
       const message = await readApiErrorMessage(
         response,

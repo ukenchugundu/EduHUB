@@ -13,6 +13,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import FacultyLayout from "@/components/FacultyLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { readStoredAuth } from "@/lib/authSession";
 
 interface ApiErrorResponse {
   error?: string;
@@ -32,6 +33,14 @@ interface FacultyResultItem {
 }
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+const buildAuthHeaders = (includeJsonContentType = false): HeadersInit => {
+  const token = readStoredAuth()?.token?.trim();
+  return {
+    ...(includeJsonContentType ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+};
 
 const withTimeoutSignal = (
   timeoutMs = 6000,
@@ -72,6 +81,7 @@ const fetchFacultyResults = async (
 
   try {
     const response = await fetch(`${API_BASE}/api/faculty/results`, {
+      headers: buildAuthHeaders(false),
       signal: request.signal,
     });
     if (!response.ok) {
@@ -108,7 +118,7 @@ const updateFacultyScore = async (params: {
       `${API_BASE}/api/faculty/results/${params.attemptId}/score`,
       {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: buildAuthHeaders(true),
         body: JSON.stringify({ score: params.score }),
         signal: request.signal,
       },

@@ -11,6 +11,19 @@ import { Request, Response } from "express";
 import { Pool, PoolClient } from "pg";
 import jwt from "jsonwebtoken";
 import pool from "../utils/db";
+import {
+  buildFacultyClassOptionsFromStudentRows,
+  clearInMemoryFacultyClassAllocations,
+  ensureFacultyClassAllocationsTable,
+  getAllFacultyClassAllocations,
+  getFacultyClassAllocations,
+  getInMemoryFacultyClassAllocations,
+  listAvailableFacultyClassOptions,
+  normalizeClassName,
+  setInMemoryFacultyClassAllocations,
+  type FacultyClassAllocation,
+} from "../utils/facultyClassAccess";
+import { ensureStudentPortalContext } from "../utils/studentPortalAccess";
 
 type UserRole = "student" | "faculty" | "admin";
 
@@ -85,6 +98,7 @@ interface AdminMemberSummary {
   designation: string;
   createdAt: string;
   updatedAt: string;
+  assignedClasses: FacultyClassAllocation[];
 }
 
 interface PendingLoginOtpChallenge {
@@ -906,6 +920,7 @@ const toAdminMemberSummary = (row: AuthUserSummaryRow): AdminMemberSummary => ({
   designation: row.designation ?? "",
   createdAt: toIsoDateString(row.created_at),
   updatedAt: toIsoDateString(row.updated_at ?? row.created_at),
+  assignedClasses: [],
 });
 
 const toInMemoryAdminMemberSummary = (
@@ -923,6 +938,10 @@ const toInMemoryAdminMemberSummary = (
   designation: user.designation ?? "",
   createdAt: toIsoDateString(user.created_at),
   updatedAt: toIsoDateString(user.updated_at ?? user.created_at),
+  assignedClasses:
+    user.role === "faculty"
+      ? getInMemoryFacultyClassAllocations(Number(user.auth_user_id))
+      : [],
 });
 
 const ensureAuthUsersTable = async (db: Pool | PoolClient): Promise<void> => {
@@ -1212,7 +1231,15 @@ const createUserInDb = async (
       createdAt,
     ],
   );
-  return { user: toPublicUser(inserted.rows[0]) };
+  const createdUser = inserted.rows[0];
+  if (role === "student") {
+    try {
+      await ensureStudentPortalContext(db, Number(createdUser.auth_user_id));
+    } catch (error) {
+      console.warn("Failed to sync student portal profile after creation:", error);
+    }
+  }
+  return { user: toPublicUser(createdUser) };
 };
 
 const createUserInMemory = ({
@@ -1560,6 +1587,87 @@ const getAdminMemberCounts = (members: AdminMemberSummary[]) => ({
   admins: members.filter((member) => member.role === "admin").length,
 });
 
+const attachAssignedClassesToMembers = (
+  members: AdminMemberSummary[],
+  allocationsByFacultyId: Map<number, FacultyClassAllocation[]>,
+): AdminMemberSummary[] =>
+  members.map((member) =>
+    member.role === "faculty"
+      ? {
+          ...member,
+          assignedClasses: allocationsByFacultyId.get(member.id) ?? [],
+        }
+      : member,
+  );
+
+const buildClassAllocationKey = (
+  allocation: Pick<FacultyClassAllocation, "className" | "batchId">,
+): string =>
+  allocation.batchId && allocation.batchId > 0
+    ? `batch:${allocation.batchId}`
+    : `class:${normalizeClassName(allocation.className)}`;
+
+const normalizeFacultyClassAllocationsPayload = (
+  body: unknown,
+): {
+  error?: string;
+  payload?: FacultyClassAllocation[];
+} => {
+  const rawBody =
+    body && typeof body === "object"
+      ? (body as { allocations?: unknown })
+      : {};
+  const rawAllocations = rawBody.allocations;
+
+  if (!Array.isArray(rawAllocations)) {
+    return { error: "allocations must be an array." };
+  }
+
+  const deduped = new Map<string, FacultyClassAllocation>();
+  for (const rawAllocation of rawAllocations) {
+    const row =
+      rawAllocation && typeof rawAllocation === "object"
+        ? (rawAllocation as {
+            className?: unknown;
+            batchId?: unknown;
+            department?: unknown;
+            academicYear?: unknown;
+            section?: unknown;
+            studentCount?: unknown;
+          })
+        : {};
+
+    const className = normalizeOptionalText(row.className, 255);
+    const batchId = Number(row.batchId);
+    const normalizedBatchId =
+      Number.isInteger(batchId) && batchId > 0 ? batchId : null;
+    const department = normalizeDepartment(row.department);
+    const academicYear = normalizeAcademicYear(row.academicYear);
+    const section = normalizeSection(row.section);
+
+    if (!className) {
+      return { error: "Each allocation must include a className." };
+    }
+
+    const allocation: FacultyClassAllocation = {
+      className,
+      batchId: normalizedBatchId,
+      department,
+      academicYear,
+      section,
+      studentCount: 0,
+    };
+
+    deduped.set(buildClassAllocationKey(allocation), allocation);
+  }
+
+  return {
+    payload: Array.from(deduped.values()).sort((left, right) =>
+      left.className.localeCompare(right.className),
+    ),
+  };
+};
+
 export const getAdminMembers = async (req: Request, res: Response) => {
   const roleFilter = parseAdminRoleFilter(req, res);
   if (roleFilter === null && req.query.role && req.query.role !== "all") {
@@ -1586,6 +1694,7 @@ export const getAdminMembers = async (req: Request, res: Response) => {
   try {
     await ensureAuthUsersTable(pool);
     await seedDefaultAccounts(pool);
+    await ensureFacultyClassAllocationsTable(pool);
 
     const queryParams: unknown[] = [];
     let whereClause = "WHERE role IN ('student', 'faculty', 'admin')";
@@ -1619,7 +1728,11 @@ export const getAdminMembers = async (req: Request, res: Response) => {
       queryParams,
     );
 
-    const members = result.rows.map(toAdminMemberSummary);
+    const allocationsByFacultyId = await getAllFacultyClassAllocations(pool);
+    const members = attachAssignedClassesToMembers(
+      result.rows.map(toAdminMemberSummary),
+      allocationsByFacultyId,
+    );
     return res.json({
       members,
       counts: getAdminMemberCounts(members),
@@ -1639,6 +1752,323 @@ export const getAdminMembers = async (req: Request, res: Response) => {
     }
 
     console.error("Error fetching admin members:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getAdminClassOptions = async (req: Request, res: Response) => {
+  try {
+    await ensureAuthUsersTable(pool);
+    await seedDefaultAccounts(pool);
+
+    const classOptions = await listAvailableFacultyClassOptions(pool);
+    return res.json({ classOptions });
+  } catch (error) {
+    if (isDatabaseConnectionError(error)) {
+      ensureInMemorySeedUsers();
+      return res.json({
+        classOptions: buildFacultyClassOptionsFromStudentRows(
+          inMemoryUsers
+            .filter((user) => user.role === "student")
+            .map((user) => ({
+              department: user.department ?? "",
+              academic_year: user.academic_year ?? "",
+              section: user.section ?? "",
+            })),
+        ),
+      });
+    }
+
+    console.error("Error fetching admin class options:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const updateFacultyClassAllocations = async (
+  req: Request,
+  res: Response,
+) => {
+  const memberId = parseAdminMemberIdParam(req, res);
+  if (!memberId) {
+    return;
+  }
+
+  const normalized = normalizeFacultyClassAllocationsPayload(req.body);
+  if (normalized.error || !normalized.payload) {
+    return res
+      .status(400)
+      .json({ error: normalized.error ?? "Invalid allocation payload." });
+  }
+
+  const requestedAllocations = normalized.payload;
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+      await ensureAuthUsersTable(client);
+      await seedDefaultAccounts(client);
+      await ensureFacultyClassAllocationsTable(client);
+
+      const memberResult = await client.query<AuthUserSummaryRow>(
+        `
+          SELECT auth_user_id, email, role, full_name, roll_number, phone,
+            department, academic_year, section, designation, created_at, updated_at
+          FROM auth_users
+          WHERE auth_user_id = $1
+          LIMIT 1
+        `,
+        [memberId],
+      );
+      const member = memberResult.rows[0];
+      if (!member) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Member not found." });
+      }
+      if (member.role !== "faculty") {
+        await client.query("ROLLBACK");
+        return res
+          .status(400)
+          .json({ error: "Class allocations can only be assigned to faculty." });
+      }
+
+      const availableOptions = await listAvailableFacultyClassOptions(client);
+      const existingAllocations = await getFacultyClassAllocations(client, memberId);
+      const validAllocationKeys = new Set(
+        [...availableOptions, ...existingAllocations].map((allocation) =>
+          buildClassAllocationKey(allocation),
+        ),
+      );
+
+      const hasInvalidAllocation = requestedAllocations.some(
+        (allocation) => !validAllocationKeys.has(buildClassAllocationKey(allocation)),
+      );
+      if (hasInvalidAllocation) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "One or more selected classes are no longer available. Refresh the page and try again.",
+        });
+      }
+
+      await client.query(
+        "DELETE FROM faculty_class_allocations WHERE faculty_id = $1",
+        [memberId],
+      );
+
+      for (const allocation of requestedAllocations) {
+        await client.query(
+          `
+            INSERT INTO faculty_class_allocations (
+              faculty_id,
+              class_name,
+              batch_id,
+              department,
+              academic_year,
+              section,
+              created_at,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+          `,
+          [
+            memberId,
+            allocation.className,
+            allocation.batchId,
+            allocation.department || null,
+            allocation.academicYear || null,
+            allocation.section || null,
+          ],
+        );
+      }
+
+      await client.query("COMMIT");
+      return res.json({
+        memberId,
+        assignedClasses: requestedAllocations,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    if (isDatabaseConnectionError(error)) {
+      ensureInMemorySeedUsers();
+      const member = inMemoryUsers.find((user) => user.auth_user_id === memberId);
+      if (!member) {
+        return res.status(404).json({ error: "Member not found." });
+      }
+      if (member.role !== "faculty") {
+        return res
+          .status(400)
+          .json({ error: "Class allocations can only be assigned to faculty." });
+      }
+
+      const availableOptions = buildFacultyClassOptionsFromStudentRows(
+        inMemoryUsers
+          .filter((user) => user.role === "student")
+          .map((user) => ({
+            department: user.department ?? "",
+            academic_year: user.academic_year ?? "",
+            section: user.section ?? "",
+          })),
+      );
+      const existingAllocations = getInMemoryFacultyClassAllocations(memberId);
+      const validAllocationKeys = new Set(
+        [...availableOptions, ...existingAllocations].map((allocation) =>
+          buildClassAllocationKey(allocation),
+        ),
+      );
+
+      const hasInvalidAllocation = requestedAllocations.some(
+        (allocation) => !validAllocationKeys.has(buildClassAllocationKey(allocation)),
+      );
+      if (hasInvalidAllocation) {
+        return res.status(400).json({
+          error:
+            "One or more selected classes are no longer available. Refresh the page and try again.",
+        });
+      }
+
+      return res.json({
+        memberId,
+        assignedClasses: setInMemoryFacultyClassAllocations(
+          memberId,
+          requestedAllocations,
+        ),
+      });
+    }
+
+    console.error("Error updating faculty class allocations:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getFacultyClassAllocationsForCurrentUser = async (
+  req: Request,
+  res: Response,
+) => {
+  const authUser =
+    req && typeof req === "object" && "user" in req
+      ? ((req as Request & { user?: { userId?: unknown; role?: unknown } }).user ??
+          null)
+      : null;
+  const userId = Number(authUser?.userId);
+  const role = String(authUser?.role ?? "").trim().toLowerCase();
+
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(401).json({ error: "Authentication is required." });
+  }
+  if (role !== "faculty" && role !== "admin") {
+    return res
+      .status(403)
+      .json({ error: "Only faculty or admin users can view class allocations." });
+  }
+
+  try {
+    await ensureAuthUsersTable(pool);
+    await seedDefaultAccounts(pool);
+    await ensureFacultyClassAllocationsTable(pool);
+
+    const classAllocations = await getFacultyClassAllocations(pool, userId);
+    return res.json({
+      classAllocations,
+      totalAllocatedClasses: classAllocations.length,
+    });
+  } catch (error) {
+    if (isDatabaseConnectionError(error)) {
+      const classAllocations = getInMemoryFacultyClassAllocations(userId);
+      return res.json({
+        classAllocations,
+        totalAllocatedClasses: classAllocations.length,
+      });
+    }
+
+    console.error("Error fetching faculty class allocations:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getCurrentUserProfile = async (req: Request, res: Response) => {
+  const authUser =
+    req && typeof req === "object" && "user" in req
+      ? ((req as Request & { user?: { userId?: unknown } }).user ?? null)
+      : null;
+  const userId = Number(authUser?.userId);
+
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(401).json({ error: "Authentication is required." });
+  }
+
+  try {
+    await ensureAuthUsersTable(pool);
+    await seedDefaultAccounts(pool);
+
+    const result = await pool.query<AuthUserSummaryRow>(
+      `
+        SELECT auth_user_id, email, role, full_name, roll_number, phone,
+          department, academic_year, section, designation, created_at, updated_at
+        FROM auth_users
+        WHERE auth_user_id = $1
+        LIMIT 1
+      `,
+      [userId],
+    );
+
+    const user = result.rows[0];
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const studentContext =
+      user.role === "student"
+        ? await ensureStudentPortalContext(pool, userId)
+        : null;
+
+    return res.json({
+      id: Number(user.auth_user_id),
+      email: user.email,
+      role: toManagedRole(user.role),
+      fullName: user.full_name ?? "",
+      rollNumber: user.roll_number ?? "",
+      studentId: user.roll_number ?? user.email,
+      phone: user.phone ?? "",
+      department: studentContext?.department || user.department || "",
+      academicYear: studentContext?.academicYear || user.academic_year || "",
+      section: studentContext?.section || user.section || "",
+      designation: user.designation ?? "",
+      batchId: studentContext?.batchId ?? null,
+      batchName: studentContext?.batchName ?? "",
+    });
+  } catch (error) {
+    if (isDatabaseConnectionError(error)) {
+      ensureInMemorySeedUsers();
+      const user = inMemoryUsers.find((item) => item.auth_user_id === userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found." });
+      }
+
+      return res.json({
+        id: Number(user.auth_user_id),
+        email: user.email,
+        role: toManagedRole(user.role),
+        fullName: user.full_name ?? "",
+        rollNumber: user.roll_number ?? "",
+        studentId: user.roll_number ?? user.email,
+        phone: user.phone ?? "",
+        department: user.department ?? "",
+        academicYear: user.academic_year ?? "",
+        section: user.section ?? "",
+        designation: user.designation ?? "",
+        batchId: null,
+        batchName: "",
+      });
+    }
+
+    console.error("Error fetching current user profile:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -1753,6 +2183,13 @@ export const updateAdminMember = async (req: Request, res: Response) => {
         );
 
     const updated = updateResult.rows[0];
+    if (updated.role === "student") {
+      try {
+        await ensureStudentPortalContext(pool, memberId);
+      } catch (syncError) {
+        console.warn("Failed to sync student portal profile after update:", syncError);
+      }
+    }
     return res.json({ member: toAdminMemberSummary(updated) });
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
@@ -1827,6 +2264,7 @@ export const deleteAdminMember = async (req: Request, res: Response) => {
   try {
     await ensureAuthUsersTable(pool);
     await seedDefaultAccounts(pool);
+    await ensureFacultyClassAllocationsTable(pool);
 
     const deletedResult = await pool.query<AuthUserSummaryRow>(
       `
@@ -1845,6 +2283,11 @@ export const deleteAdminMember = async (req: Request, res: Response) => {
         .status(404)
         .json({ error: "Member not found or cannot be deleted." });
     }
+
+    await pool.query(
+      "DELETE FROM faculty_class_allocations WHERE faculty_id = $1",
+      [memberId],
+    );
 
     return res.json({
       deleted: toAdminMemberSummary(deleted),
@@ -1866,6 +2309,7 @@ export const deleteAdminMember = async (req: Request, res: Response) => {
       }
 
       const [deleted] = inMemoryUsers.splice(index, 1);
+      clearInMemoryFacultyClassAllocations(memberId);
       return res.json({
         deleted: toInMemoryAdminMemberSummary({
           ...deleted,
@@ -2182,14 +2626,29 @@ export const loginUser = async (req: Request, res: Response) => {
 
     clearFailures(loginFailureLockouts, loginFailureKey);
     const publicUser = toPublicUser(user);
-    const { challengeId, otp } = createLoginChallenge(publicUser);
-    await sendLoginOtpEmail({
-      email: publicUser.email,
-      fullName: publicUser.fullName,
-      otp,
-    });
+    if (publicUser.role === "student") {
+      try {
+        await ensureStudentPortalContext(pool, publicUser.id);
+      } catch (syncError) {
+        console.warn("Failed to sync student portal profile during login:", syncError);
+      }
+    }
 
-    return res.json(toLoginOtpResponse(publicUser, otp, challengeId));
+    // Direct token login - OTP disabled for simplicity
+    const JWT_SECRET = "fallback-secret";
+    const token = jwt.sign(
+      {
+        userId: publicUser.id,
+        email: publicUser.email,
+        role: publicUser.role,
+      },
+      JWT_SECRET,
+      { expiresIn: "24h" },
+    );
+
+    clearFailures(loginFailureLockouts, loginFailureKey);
+
+    return res.json({ user: publicUser, token });
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
       ensureInMemorySeedUsers();
@@ -2202,29 +2661,23 @@ export const loginUser = async (req: Request, res: Response) => {
         return respondForInvalidCredentials();
       }
 
-      const otpSendRate = applyRateLimit(
-        authRateLimitStore,
-        otpSendRateKey,
-        OTP_RESEND_RATE_LIMIT,
+      const publicUser = toPublicUser(user);
+
+      // Direct token login - OTP disabled
+      const JWT_SECRET = "fallback-secret";
+      const token = jwt.sign(
+        {
+          userId: publicUser.id,
+          email: publicUser.email,
+          role: publicUser.role,
+        },
+        JWT_SECRET,
+        { expiresIn: "24h" },
       );
-      if (!otpSendRate.allowed) {
-        return respondWithRateLimit(
-          res,
-          otpSendRate.retryAfterMs,
-          "Too many OTP requests for this account.",
-        );
-      }
 
       clearFailures(loginFailureLockouts, loginFailureKey);
-      const publicUser = toPublicUser(user);
-      const { challengeId, otp } = createLoginChallenge(publicUser);
-      await sendLoginOtpEmail({
-        email: publicUser.email,
-        fullName: publicUser.fullName,
-        otp,
-      });
 
-      return res.json(toLoginOtpResponse(publicUser, otp, challengeId));
+      return res.json({ user: publicUser, token });
     }
 
     if (

@@ -16,89 +16,12 @@ import { Input } from "@/components/ui/input";
 import TestResultDetail from "@/components/TestResultDetail";
 import QuizResultDetail from "@/components/QuizResultDetail";
 import AssignmentResultDetail from "@/components/AssignmentResultDetail";
-
-interface TestResult {
-  testId: string;
-  testTitle: string;
-  score: number;
-  maxScore: number;
-  status: string;
-  submittedAt: string;
-  timeSpent: number;
-  difficulty: string;
-  feedback?: string;
-  problems?: Array<{
-    id: string;
-    title: string;
-    difficulty: string;
-    status: "solved" | "attempted" | "not_attempted";
-    score: number;
-    maxScore: number;
-  }>;
-}
-
-interface QuizResult {
-  quizId: string;
-  quizTitle: string;
-  score: number;
-  maxScore: number;
-  correctAnswers: number;
-  totalQuestions: number;
-  status: string;
-  submittedAt: string;
-  timeSpent: number;
-  class: string;
-  questions?: Array<{
-    id: string;
-    question: string;
-    userAnswer: string;
-    correctAnswer: string;
-    isCorrect: boolean;
-    points: number;
-  }>;
-}
-
-interface AssignmentResult {
-  assignmentId: string;
-  assignmentTitle: string;
-  score: number;
-  maxScore: number;
-  status: string;
-  submittedAt: string;
-  dueDate: string;
-  fileUrl?: string | null;
-  feedback?: string;
-  grade?: string;
-  submissionDetails?: {
-    fileName: string;
-    fileSize: string;
-    submissionType: string;
-    lateSubmission: boolean;
-    daysLate?: number;
-  };
-  rubric?: Array<{
-    criteria: string;
-    maxPoints: number;
-    earnedPoints: number;
-    feedback?: string;
-  }>;
-}
-
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-
-// Helper to get auth token
-const getAuthToken = (): string | null => {
-  try {
-    const authData = localStorage.getItem("eduhub_auth");
-    if (authData) {
-      const parsed = JSON.parse(authData);
-      return parsed.token || null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-};
+import {
+  fetchStudentPerformanceData,
+  StudentAssignmentResult as AssignmentResult,
+  StudentQuizResult as QuizResult,
+  StudentTestResult as TestResult,
+} from "@/lib/studentPerformance";
 
 const StudentResults = () => {
   const [testResults, setTestResults] = useState<TestResult[]>([]);
@@ -121,58 +44,11 @@ const StudentResults = () => {
   }, []);
 
   const fetchResults = async () => {
-    const token = getAuthToken();
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
-
     try {
-      const [testRes, quizRes, assignmentRes] = await Promise.all([
-        fetch(`${API_BASE}/api/student/my-test-results`, { headers }),
-        fetch(`${API_BASE}/api/quizzes/student/results`, { headers }),
-        fetch(`${API_BASE}/api/student/my-assignment-results`, { headers }),
-      ]);
-
-      if (testRes.ok) {
-        const testData = await testRes.json();
-        setTestResults(testData);
-      }
-
-      if (quizRes.ok) {
-        const quizData = await quizRes.json();
-        // Map backend quiz results to frontend format
-        const mappedQuizData = quizData.map((q: any) => ({
-          quizId: String(q.quiz_id),
-          quizTitle: q.quiz_title,
-          score: q.auto_score || q.faculty_score || 0,
-          maxScore: q.total_questions || 10,
-          correctAnswers: q.auto_score || 0,
-          totalQuestions: q.total_questions || 10,
-          status: q.reviewed_at ? "Reviewed" : "Pending",
-          submittedAt: q.submitted_at,
-          timeSpent: 0,
-          class: q.cls || "",
-        }));
-        setQuizResults(mappedQuizData);
-      }
-
-      if (assignmentRes.ok) {
-        const assignmentData = await assignmentRes.json();
-        // Map backend snake_case to frontend camelCase if needed
-        const mappedData = assignmentData.map((a: any) => ({
-          ...a,
-          assignmentId: a.assignment_id,
-          assignmentTitle: a.assignment_title,
-          submittedAt: a.submitted_at,
-          dueDate: a.due_date,
-          fileUrl: a.file_url,
-          submissionDetails: a.submission_details || {
-            fileName: a.file_url ? a.file_url.split("/").pop() : "Submission",
-            fileSize: "Unknown",
-            submissionType: "Document",
-            lateSubmission: false,
-          },
-        }));
-        setAssignmentResults(mappedData);
-      }
+      const data = await fetchStudentPerformanceData();
+      setTestResults(data.tests);
+      setQuizResults(data.quizzes);
+      setAssignmentResults(data.assignments);
     } catch (error) {
       console.error("Failed to fetch results:", error);
     } finally {

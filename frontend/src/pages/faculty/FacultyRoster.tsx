@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import FacultyLayout from "@/components/FacultyLayout";
 import { Button } from "@/components/ui/button";
+import { readStoredAuth } from "@/lib/authSession";
 
 interface ApiErrorResponse {
   error?: string;
@@ -70,6 +71,11 @@ interface ClassPerformanceSummary {
 }
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+const buildAuthHeaders = (): HeadersInit => {
+  const token = readStoredAuth()?.token?.trim();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
 
 const withTimeoutSignal = (
   timeoutMs = 6000,
@@ -153,6 +159,7 @@ const fetchFacultyQuizResults = async (
 
   try {
     const response = await fetch(`${API_BASE}/api/faculty/results`, {
+      headers: buildAuthHeaders(),
       signal: request.signal,
     });
     if (!response.ok) {
@@ -192,6 +199,7 @@ const fetchFacultyAssignmentSubmissions = async (
     const response = await fetch(
       `${API_BASE}/api/faculty/assignments/submissions`,
       {
+        headers: buildAuthHeaders(),
         signal: request.signal,
       },
     );

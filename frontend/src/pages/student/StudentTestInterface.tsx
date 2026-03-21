@@ -29,6 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
+import { readStoredAuth } from "@/lib/authSession";
 
 interface Question {
   id: string;
@@ -68,19 +69,7 @@ interface CheatEvent {
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
-// Helper to get auth token
-const getAuthToken = (): string | null => {
-  try {
-    const authData = localStorage.getItem("eduhub_auth");
-    if (authData) {
-      const parsed = JSON.parse(authData);
-      return parsed.token || null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-};
+const getAuthToken = (): string | null => readStoredAuth()?.token?.trim() || null;
 
 const StudentTestInterface = ({ testId: propTestId }: { testId?: string | number }) => {
   const { testId: paramTestId } = useParams();
@@ -100,6 +89,7 @@ const StudentTestInterface = ({ testId: propTestId }: { testId?: string | number
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [activeTab, setActiveTab] = useState<"description" | "results">("description");
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   
   // Anti-cheat states
   const [showLockScreen, setShowLockScreen] = useState(false);
@@ -318,12 +308,11 @@ const StudentTestInterface = ({ testId: propTestId }: { testId?: string | number
       const newViolationCount = violationCount + 1;
       setViolationCount(newViolationCount);
 
-      // Get auth token from localStorage
       const token = getAuthToken();
 
       // Send to backend
       try {
-        await fetch("/api/tests/log-cheating", {
+        await fetch(`${API_BASE}/api/tests/log-cheating`, {
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
@@ -377,8 +366,8 @@ const StudentTestInterface = ({ testId: propTestId }: { testId?: string | number
 
   const fetchTest = async () => {
     setIsLoading(true);
+    setLoadError("");
     
-    // Get auth token from localStorage
     const token = getAuthToken();
     const authHeaders: HeadersInit = {
       "Content-Type": "application/json",
@@ -390,108 +379,35 @@ const StudentTestInterface = ({ testId: propTestId }: { testId?: string | number
         headers: authHeaders,
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setTest(data);
-        setTimeLeft(data.duration_minutes * 60 || data.duration * 60);
-        if (data.questions?.length > 0) {
-          setLanguage(data.questions[0].language || "python");
-        }
-        // Set max violations from test settings
-        if (data.proctoring?.maxViolations) {
-          setMaxViolations(data.proctoring.maxViolations);
-        }
-      } else {
-        throw new Error("API not available");
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error || "Failed to load assessment.");
+      }
+
+      const data = await response.json();
+      setTest(data);
+      setTimeLeft(data.duration_minutes * 60 || data.duration * 60);
+      if (data.questions?.length > 0) {
+        setLanguage(data.questions[0].language || "python");
+      }
+      // Set max violations from test settings
+      if (data.proctoring?.maxViolations) {
+        setMaxViolations(data.proctoring.maxViolations);
       }
     } catch (error) {
-      // Fallback to mock data
-      const mockTest: Test = {
-        id: testId != null ? String(testId) : "1",
-        title: "Data Structures & Algorithms Assessment",
-        duration: 90,
-        endTime: new Date(Date.now() + 90 * 60 * 1000).toISOString(),
-        questions: [
-          {
-            id: "q1",
-            title: "Two Sum",
-            description: `Given an array of integers \`nums\` and an integer \`target\`, return indices of the two numbers such that they add up to \`target\`.
-
-You may assume that each input would have exactly one solution, and you may not use the same element twice.
-
-You can return the answer in any order.`,
-            difficulty: "Easy",
-            testCases: [
-              { input: "nums = [2,7,11,15], target = 9", output: "[0,1]" },
-              { input: "nums = [3,2,4], target = 6", output: "[1,2]" },
-              { input: "nums = [3,3], target = 6", output: "[0,1]" },
-            ],
-            starterCode: `class Solution:
-    def twoSum(self, nums: List[int], target: int) -> List[int]:
-        # Write your code here
-        pass`,
-            language: "python",
-          },
-          {
-            id: "q2",
-            title: "Valid Parentheses",
-            description: `Given a string \`s\` containing just the characters \`'('\`, \`')'\`, \`'{'\`, \`'}'\`, \`'['\` and \`']'\`, determine if the input string is valid.
-
-An input string is valid if:
-1. Open brackets must be closed by the same type of brackets.
-2. Open brackets must be closed in the correct order.
-3. Every close bracket has a corresponding open bracket of the same type.`,
-            difficulty: "Easy",
-            testCases: [
-              { input: 's = "()"', output: "true" },
-              { input: 's = "()[]{}"', output: "true" },
-              { input: 's = "(]"', output: "false" },
-            ],
-            starterCode: `class Solution:
-    def isValid(self, s: str) -> bool:
-        # Write your code here
-        pass`,
-            language: "python",
-          },
-          {
-            id: "q3",
-            title: "Merge Two Sorted Lists",
-            description: `You are given the heads of two sorted linked lists \`list1\` and \`list2\`.
-
-Merge the two lists into one sorted list. The list should be made by splicing together the nodes of the first two lists.
-
-Return the head of the merged linked list.`,
-            difficulty: "Easy",
-            testCases: [
-              { input: "list1 = [1,2,4], list2 = [1,3,4]", output: "[1,1,2,3,4,4]" },
-              { input: "list1 = [], list2 = []", output: "[]" },
-            ],
-            starterCode: `# Definition for singly-linked list
-class ListNode:
-    def __init__(self, val=0, next=None):
-        self.val = val
-        self.next = next
-
-class Solution:
-    def mergeTwoLists(self, list1: Optional[ListNode], list2: Optional[ListNode]) -> Optional[ListNode]:
-        # Write your code here
-        pass`,
-            language: "python",
-          },
-        ],
-      };
-      setTest(mockTest);
-      setTimeLeft(90 * 60);
-      if (mockTest.questions?.length > 0) {
-        setLanguage(mockTest.questions[0].language || "python");
-      }
+      console.error("Failed to load test:", error);
+      setTest(null);
+      setLoadError(
+        error instanceof Error ? error.message : "Failed to load assessment.",
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleStartTest = async () => {
-    // Get auth token from localStorage
     const token = getAuthToken();
     const authHeaders: HeadersInit = {
       "Content-Type": "application/json",
@@ -504,29 +420,23 @@ class Solution:
         headers: authHeaders,
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setAttemptId(data.attempt.id);
-        setTestStarted(true);
-        if (test?.questions[0]) {
-          setCode(test.questions[0].starterCode);
-        }
-      } else {
-        // API returned error - use demo mode
-        console.warn("API returned error, using demo mode");
-        setAttemptId("demo_" + Date.now());
-        setTestStarted(true);
-        if (test?.questions[0]) {
-          setCode(test.questions[0].starterCode);
-        }
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error || "Failed to start test.");
       }
-    } catch (error) {
-      console.warn("Using demo mode for start test:", error);
-      setAttemptId("demo_" + Date.now());
+      const data = await response.json();
+      setAttemptId(data.attempt.id);
       setTestStarted(true);
       if (test?.questions[0]) {
         setCode(test.questions[0].starterCode);
       }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to start test.",
+      );
+      return;
     }
     
     // Request fullscreen
@@ -546,7 +456,6 @@ class Solution:
 
     const question = test.questions[currentQuestion];
 
-    // Get auth token from localStorage
     const token = getAuthToken();
     const authHeaders: HeadersInit = {
       "Content-Type": "application/json",
@@ -554,7 +463,7 @@ class Solution:
     };
 
     try {
-      const response = await fetch("/api/tests/run-code", {
+      const response = await fetch(`${API_BASE}/api/tests/run-code`, {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
@@ -591,24 +500,13 @@ class Solution:
           toast.error(`⚠️ Runtime Error: ${result.error}`);
         }
       } else {
-        throw new Error("API not available");
+        const body = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error || "Failed to run code.");
       }
     } catch (error) {
-      // Fallback mock result - simulate test cases
-      const passedCount = Math.floor(Math.random() * question.testCases.length);
-      const mockResult: TestResult = {
-        success: passedCount === question.testCases.length,
-        status: passedCount === question.testCases.length ? "Accepted" : "Wrong Answer",
-        results: question.testCases.map((tc, i) => ({
-          passed: i < passedCount,
-          output: passedCount > i ? tc.output : "Wrong output",
-          expected: tc.output,
-        })),
-        executionTime: Math.floor(Math.random() * 100) + 20,
-        memoryUsed: Math.floor(Math.random() * 20) + 5,
-      };
-      setTestResults((prev) => ({ ...prev, [question.id]: mockResult }));
-      toast.success("Code executed (Demo Mode - no backend)");
+      toast.error(error instanceof Error ? error.message : "Failed to run code.");
     } finally {
       setIsRunning(false);
     }
@@ -624,10 +522,10 @@ class Solution:
     logCheatEvent("code_submitted", `Question ${currentQuestion + 1} submitted`);
 
     // Submit to backend if attemptId is available
-    if (attemptId && !attemptId.toString().startsWith("demo_")) {
+    if (attemptId) {
       const token = getAuthToken();
       try {
-        await fetch("/api/tests/submit-code", {
+        await fetch(`${API_BASE}/api/tests/submit-code`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -672,7 +570,6 @@ class Solution:
       // Ignore fullscreen exit errors
     }
 
-    // Get auth token from localStorage
     const token = getAuthToken();
     const authHeaders: HeadersInit = {
       "Content-Type": "application/json",
@@ -682,7 +579,7 @@ class Solution:
     // Submit to backend
     try {
       const idToSubmit = attemptId || testId;
-      await fetch(`${API_BASE}/api/tests/${idToSubmit}/submit`, {
+      const response = await fetch(`${API_BASE}/api/tests/${idToSubmit}/submit`, {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({ 
@@ -691,8 +588,18 @@ class Solution:
           cheatEvents 
         }),
       });
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error || "Failed to submit test.");
+      }
     } catch (error) {
-      console.warn("Failed to submit test:", error);
+      toast.error(
+        error instanceof Error ? error.message : "Failed to submit test.",
+      );
+      return;
     }
 
     toast.success("📤 Test submitted successfully!");
@@ -731,6 +638,21 @@ class Solution:
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
           <p className="text-zinc-400 font-medium">Loading assessment...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError || !test) {
+    return (
+      <div className="h-screen w-screen bg-[#0d1117] flex items-center justify-center p-6">
+        <div className="max-w-xl w-full rounded-2xl border border-zinc-800 bg-[#161b22] p-8 text-center">
+          <AlertCircle className="mx-auto mb-4 h-10 w-10 text-rose-400" />
+          <h1 className="mb-2 text-2xl font-semibold text-white">Assessment Unavailable</h1>
+          <p className="mb-6 text-zinc-400">
+            {loadError || "This assessment could not be loaded from the database."}
+          </p>
+          <Button onClick={() => navigate("/student/tests")}>Back to Tests</Button>
         </div>
       </div>
     );
@@ -1279,4 +1201,3 @@ class Solution:
 };
 
 export default StudentTestInterface;
-

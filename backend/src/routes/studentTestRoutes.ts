@@ -1,10 +1,54 @@
 import { Router } from "express";
+import pool from "../utils/db";
+import { ensureStudentPortalContext } from "../utils/studentPortalAccess";
 
 // In-memory storage for test submissions and quiz submissions
 const testSubmissions: Record<string, any[]> = {};
 const quizSubmissions: Record<string, any[]> = {};
 
 const router = Router();
+
+const dbConnectionErrorCodes = new Set([
+  "28P01",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EHOSTUNREACH",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "3D000",
+]);
+
+const schemaErrorCodes = new Set(["42P01", "42703"]);
+
+const isDatabaseConnectionError = (error: unknown): boolean => {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  if (dbConnectionErrorCodes.has(code)) {
+    return true;
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("password authentication failed") ||
+    message.includes("client password must be a string") ||
+    message.includes("connection terminated unexpectedly") ||
+    message.includes("timeout expired") ||
+    message.includes("connect econnrefused") ||
+    (message.includes("database") && message.includes("does not exist"))
+  );
+};
+
+const isMissingSchemaError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  schemaErrorCodes.has(String((error as { code?: unknown }).code ?? ""));
 
 // Get available tests for student
 router.get("/tests", (req, res) => {
@@ -398,87 +442,76 @@ router.post("/publish-quiz-results/:quizId", (req, res) => {
 });
 
 // Student results endpoints
-router.get("/my-test-results", (req, res) => {
-  // Mock student results across all tests
-  const studentResults = [
-    {
-      testId: "1",
-      testTitle: "Data Structures Assessment",
-      score: 85,
-      maxScore: 100,
-      status: "Published",
-      submittedAt: "2024-03-15T11:25:00Z",
-      timeSpent: 85,
-      difficulty: "Medium",
-      feedback: "Good understanding of basic data structures",
-      problems: [
-        {
-          id: "q1",
-          title: "Two Sum",
-          difficulty: "Easy",
-          status: "solved",
-          score: 30,
-          maxScore: 30,
-        },
-        {
-          id: "q2",
-          title: "Valid Parentheses",
-          difficulty: "Easy",
-          status: "solved",
-          score: 25,
-          maxScore: 30,
-        },
-        {
-          id: "q3",
-          title: "Merge Two Sorted Lists",
-          difficulty: "Medium",
-          status: "attempted",
-          score: 30,
-          maxScore: 40,
-        },
-      ],
-    },
-    {
-      testId: "2",
-      testTitle: "Algorithm Design Test",
-      score: 92,
-      maxScore: 100,
-      status: "Published",
-      submittedAt: "2024-03-20T15:45:00Z",
-      timeSpent: 110,
-      difficulty: "Hard",
-      feedback: "Excellent problem-solving approach",
-      problems: [
-        {
-          id: "q1",
-          title: "Binary Tree Traversal",
-          difficulty: "Medium",
-          status: "solved",
-          score: 35,
-          maxScore: 35,
-        },
-        {
-          id: "q2",
-          title: "Dynamic Programming",
-          difficulty: "Hard",
-          status: "solved",
-          score: 40,
-          maxScore: 40,
-        },
-        {
-          id: "q3",
-          title: "Graph Algorithms",
-          difficulty: "Hard",
-          status: "attempted",
-          score: 17,
-          maxScore: 25,
-        },
-      ],
-    },
-  ];
+router.get("/my-test-results", async (req: any, res) => {
+  const authUserId = Number(req.user?.userId);
+  if (!Number.isInteger(authUserId) || authUserId <= 0) {
+    return res.status(401).json({ error: "Invalid authenticated student." });
+  }
 
-  console.log(`[Student] Returning ${studentResults.length} test results`);
-  res.json(studentResults);
+  try {
+    const studentContext = await ensureStudentPortalContext(pool, authUserId);
+    const studentId = studentContext?.portalStudentId;
+    if (!studentId) {
+      return res.json([]);
+    }
+
+    const result = await pool.query(
+      `
+        SELECT
+          ta.test_id,
+          ct.title AS test_title,
+          COALESCE(ta.total_score, 0) AS score,
+          COALESCE((
+            SELECT SUM(tq.points)::numeric
+            FROM test_questions tq
+            WHERE tq.test_id = ta.test_id
+          ), 100) AS max_score,
+          ta.status,
+          COALESCE(ta.end_time, ta.start_time) AS submitted_at,
+          COALESCE(
+            ROUND(EXTRACT(EPOCH FROM (COALESCE(ta.end_time, ta.start_time) - ta.start_time)) / 60.0),
+            0
+          ) AS time_spent,
+          COALESCE(NULLIF(ct.description, ''), 'Coding assessment result') AS feedback
+        FROM test_attempts ta
+        INNER JOIN coding_tests ct
+          ON ct.id = ta.test_id
+        WHERE ta.student_id = $1
+          AND COALESCE(ta.end_time, ta.start_time) IS NOT NULL
+        ORDER BY COALESCE(ta.end_time, ta.start_time) DESC
+      `,
+      [studentId],
+    );
+
+    const studentResults = result.rows.map((row) => ({
+      testId: String(row.test_id),
+      testTitle: String(row.test_title ?? "Coding Test"),
+      score: Number(row.score ?? 0),
+      maxScore: Math.max(1, Number(row.max_score ?? 100)),
+      status: String(row.status ?? "Submitted"),
+      submittedAt:
+        row.submitted_at instanceof Date
+          ? row.submitted_at.toISOString()
+          : String(row.submitted_at ?? new Date().toISOString()),
+      timeSpent: Math.max(0, Number(row.time_spent ?? 0)),
+      difficulty: "Coding Test",
+      feedback: String(row.feedback ?? ""),
+      problems: [],
+    }));
+
+    console.log(`[Student] Returning ${studentResults.length} test results`);
+    return res.json(studentResults);
+  } catch (error) {
+    if (isDatabaseConnectionError(error) || isMissingSchemaError(error)) {
+      console.warn(
+        "[Student] Real test results unavailable, returning empty result set",
+      );
+      return res.json([]);
+    }
+
+    console.error("Error fetching student test results:", error);
+    return res.status(500).json({ error: "Failed to fetch test results" });
+  }
 });
 
 router.get("/my-quiz-results", (req, res) => {

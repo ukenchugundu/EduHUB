@@ -1,16 +1,17 @@
-import { useState, useEffect, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
-  Clock,
   AlertTriangle,
-  CheckCircle,
-  Send,
   ArrowLeft,
   BookOpen,
+  CheckCircle,
+  Clock,
   Loader2,
+  Send,
 } from "lucide-react";
 import EduHubAIAgent from "@/components/EduHubAIAgent";
+import { getStudentIdentity, readStoredAuth } from "@/lib/authSession";
 
 interface QuizQuestion {
   question_id: number;
@@ -33,6 +34,8 @@ interface QuizAttempt {
   quiz_id: number;
   status: string;
   remaining_seconds: number;
+  score?: number | null;
+  faculty_score?: number | null;
   answers: Record<number, string>;
   quiz: Quiz;
 }
@@ -40,9 +43,32 @@ interface QuizAttempt {
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const QUIZ_API_URL = `${API_BASE}/api/quizzes`;
 
+const getQuizRequestHeaders = (): HeadersInit => {
+  const session = readStoredAuth();
+  const studentId = getStudentIdentity();
+
+  return {
+    "Content-Type": "application/json",
+    ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
+    ...(studentId ? { "x-student-id": studentId } : {}),
+  };
+};
+
 const parseDurationToMinutes = (duration: string): number => {
   const match = duration.match(/(\d+)/);
-  return match ? parseInt(match[1]) : 30;
+  return match ? parseInt(match[1], 10) : 30;
+};
+
+const readApiErrorMessage = async (
+  response: Response,
+  fallback: string,
+): Promise<string> => {
+  try {
+    const body = (await response.json()) as { error?: string };
+    return body.error ?? fallback;
+  } catch {
+    return fallback;
+  }
 };
 
 const StudentQuizAttempt = () => {
@@ -58,86 +84,192 @@ const StudentQuizAttempt = () => {
   const [score, setScore] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const saveIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [submitError, setSubmitError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [secureModeArmed, setSecureModeArmed] = useState(false);
+  const [secureModeActive, setSecureModeActive] = useState(false);
+  const [securityViolations, setSecurityViolations] = useState(0);
+  const [securityWarning, setSecurityWarning] = useState("");
+  const saveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const attemptIdRef = useRef<number | null>(null);
+  const answersRef = useRef<Record<number, string>>({});
+  const submitInFlightRef = useRef(false);
 
-  // Start quiz attempt
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
+  const persistAnswers = async (
+    activeAttemptId: number,
+    nextAnswers: Record<number, string>,
+  ) => {
+    const answerArray = Object.entries(nextAnswers)
+      .filter(([, answerText]) => answerText.trim() !== "")
+      .map(([questionId, answerText]) => ({
+        questionId: parseInt(questionId, 10),
+        answerText,
+      }));
+
+    if (answerArray.length === 0) {
+      return;
+    }
+
+    const response = await fetch(
+      `${QUIZ_API_URL}/${quizId}/attempts/${activeAttemptId}/answers`,
+      {
+        method: "PUT",
+        headers: getQuizRequestHeaders(),
+        body: JSON.stringify({ answers: answerArray }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiErrorMessage(response, "Failed to save quiz answers."),
+      );
+    }
+  };
+
+  const enterSecureMode = async () => {
+    if (document.fullscreenElement) {
+      setSecureModeActive(true);
+      setSecureModeArmed(true);
+      setSecurityWarning("");
+      return;
+    }
+
+    try {
+      await document.documentElement.requestFullscreen();
+      setSecureModeActive(true);
+      setSecureModeArmed(true);
+      setSecurityWarning("");
+    } catch (enterError) {
+      console.error("Unable to enter secure mode:", enterError);
+      setSecurityWarning(
+        "Fullscreen permission was denied. Please allow fullscreen to start the secure quiz.",
+      );
+    }
+  };
+
+  const handleSubmit = async (
+    reason: "manual" | "auto" | "security" = "manual",
+  ) => {
+    if (!quiz || submitInFlightRef.current) {
+      return;
+    }
+
+    const activeAttemptId = attempt?.attempt_id ?? attemptIdRef.current;
+    if (!activeAttemptId) {
+      setSubmitError("Quiz attempt was not initialized. Please reopen the quiz.");
+      return;
+    }
+
+    submitInFlightRef.current = true;
+    setIsSubmitting(true);
+    setSubmitError("");
+
+    try {
+      await persistAnswers(activeAttemptId, answersRef.current);
+
+      const response = await fetch(
+        `${QUIZ_API_URL}/${quiz.quiz_id}/attempts/${activeAttemptId}/submit`,
+        {
+          method: "POST",
+          headers: getQuizRequestHeaders(),
+          body: JSON.stringify({
+            reason,
+            answers: Object.entries(answersRef.current)
+              .filter(([, answerText]) => answerText.trim() !== "")
+              .map(([questionId, answerText]) => ({
+                questionId: parseInt(questionId, 10),
+                answerText,
+              })),
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          await readApiErrorMessage(response, "Failed to submit quiz."),
+        );
+      }
+
+      const result = (await response.json()) as QuizAttempt;
+      setAttempt(result);
+      attemptIdRef.current = result.attempt_id;
+      setQuiz(result.quiz ?? quiz);
+      setAnswers(result.answers ?? answersRef.current);
+      setScore(Number(result.faculty_score ?? result.score ?? 0) || 0);
+      setIsSubmitted(true);
+      setShowResults(true);
+    } catch (submitAttemptError) {
+      console.error("Error submitting quiz:", submitAttemptError);
+      setSubmitError(
+        submitAttemptError instanceof Error
+          ? submitAttemptError.message
+          : "Failed to submit quiz.",
+      );
+    } finally {
+      setIsSubmitting(false);
+      submitInFlightRef.current = false;
+    }
+  };
+
   useEffect(() => {
     const startAttempt = async () => {
       try {
         const response = await fetch(`${QUIZ_API_URL}/${quizId}/attempts/start`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ studentId: "student-demo" }),
+          headers: getQuizRequestHeaders(),
+          body: JSON.stringify({}),
         });
 
         if (!response.ok) {
-          // If attempt already exists, try to get it
-          const getResponse = await fetch(`${QUIZ_API_URL}/${quizId}/attempts/1`);
-          if (getResponse.ok) {
-            const data = await getResponse.json();
-            setAttempt(data);
-            setQuiz(data.quiz);
-            setAnswers(data.answers || {});
-            setTimeLeft(data.remaining_seconds || parseDurationToMinutes(data.quiz?.duration || "30") * 60);
-            if (data.status === "Submitted") {
-              setIsSubmitted(true);
-              setShowResults(true);
-              setScore(data.score || 0);
-            }
-            setLoading(false);
-            return;
-          }
-          throw new Error("Failed to start quiz");
+          throw new Error(
+            await readApiErrorMessage(response, "Failed to start quiz."),
+          );
         }
 
-        const data = await response.json();
+        const data = (await response.json()) as QuizAttempt;
         setAttempt(data);
         setQuiz(data.quiz);
         attemptIdRef.current = data.attempt_id;
         setAnswers(data.answers || {});
-        setTimeLeft(data.remaining_seconds || parseDurationToMinutes(data.quiz?.duration || "30") * 60);
-      } catch (err) {
-        console.error("Error starting attempt:", err);
-        // Try to continue without starting an attempt
-        try {
-          const response = await fetch(`${QUIZ_API_URL}/${quizId}`);
-          if (response.ok) {
-            const data = await response.json();
-            setQuiz(data);
-            setTimeLeft(parseDurationToMinutes(data.duration || "30") * 60);
-          }
-        } catch (e) {
-          setError("Failed to load quiz. Please try again.");
+        setTimeLeft(
+          data.remaining_seconds ||
+            parseDurationToMinutes(data.quiz?.duration || "30") * 60,
+        );
+
+        if (data.status === "Submitted") {
+          setScore(Number(data.faculty_score ?? data.score ?? 0) || 0);
+          setIsSubmitted(true);
+          setShowResults(true);
         }
+      } catch (startError) {
+        console.error("Error starting attempt:", startError);
+        setError(
+          startError instanceof Error
+            ? startError.message
+            : "Failed to load quiz. Please try again.",
+        );
       } finally {
         setLoading(false);
       }
     };
 
     if (quizId) {
-      startAttempt();
+      void startAttempt();
     }
   }, [quizId]);
 
-  // Auto-save answers every 10 seconds
   useEffect(() => {
     if (attempt && !isSubmitted && Object.keys(answers).length > 0) {
-      saveIntervalRef.current = setInterval(async () => {
-        try {
-          const answerArray = Object.entries(answers).map(([questionId, answerText]) => ({
-            questionId: parseInt(questionId),
-            answerText,
-          }));
-          
-          await fetch(`${QUIZ_API_URL}/${quizId}/attempts/${attempt.attempt_id}/answers`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ answers: answerArray }),
-          });
-        } catch (err) {
-          console.error("Error auto-saving answers:", err);
-        }
+      saveIntervalRef.current = setInterval(() => {
+        void persistAnswers(attempt.attempt_id, answersRef.current).catch(
+          (saveError) => {
+            console.error("Error auto-saving answers:", saveError);
+          },
+        );
       }, 10000);
     }
 
@@ -146,17 +278,135 @@ const StudentQuizAttempt = () => {
         clearInterval(saveIntervalRef.current);
       }
     };
-  }, [attempt, answers, isSubmitted, quizId]);
+  }, [attempt, isSubmitted, quizId, answers]);
 
-  // Timer
   useEffect(() => {
     if (timeLeft > 0 && !isSubmitted && quiz) {
       const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
       return () => clearTimeout(timer);
-    } else if (timeLeft === 0 && !isSubmitted && quiz) {
-      handleSubmit();
+    }
+
+    if (timeLeft === 0 && !isSubmitted && quiz) {
+      void handleSubmit("auto");
     }
   }, [timeLeft, isSubmitted, quiz]);
+
+  useEffect(() => {
+    if (!quiz || isSubmitted) {
+      setSecureModeArmed(false);
+      setSecureModeActive(false);
+      setSecurityViolations(0);
+      setSecurityWarning("");
+      return;
+    }
+
+    setSecureModeActive(Boolean(document.fullscreenElement));
+  }, [quiz, isSubmitted]);
+
+  useEffect(() => {
+    if (!quiz || isSubmitted || !secureModeArmed) {
+      return;
+    }
+
+    const registerViolation = (message: string) => {
+      setSecurityWarning(message);
+      setSecurityViolations((current) => {
+        const next = current + 1;
+        if (next >= 3 && !submitInFlightRef.current) {
+          void handleSubmit("security");
+        }
+        return next;
+      });
+    };
+
+    const handleFullscreenChange = () => {
+      const nextActive = Boolean(document.fullscreenElement);
+      setSecureModeActive(nextActive);
+      if (!nextActive) {
+        registerViolation(
+          "Secure mode was exited. Re-enter fullscreen to continue the quiz.",
+        );
+      } else {
+        setSecurityWarning("");
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        registerViolation(
+          "Tab switching was detected. Please stay on the quiz screen.",
+        );
+      }
+    };
+
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+
+    const handleClipboardEvent = (event: ClipboardEvent) => {
+      event.preventDefault();
+    };
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    const handlePopState = () => {
+      window.history.pushState(null, "", window.location.href);
+      registerViolation("Navigation away from the quiz was blocked.");
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const lowerKey = event.key.toLowerCase();
+      const hasModifier = event.ctrlKey || event.metaKey;
+      const blockedShortcut =
+        event.key === "F11" ||
+        event.key === "F12" ||
+        event.key === "Escape" ||
+        (hasModifier &&
+          ["r", "p", "s", "u", "c", "x", "v", "a"].includes(lowerKey)) ||
+        (hasModifier &&
+          event.shiftKey &&
+          ["i", "j", "c"].includes(lowerKey));
+
+      if (blockedShortcut) {
+        event.preventDefault();
+        registerViolation("Restricted keyboard shortcut detected.");
+      }
+    };
+
+    window.history.pushState(null, "", window.location.href);
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("contextmenu", handleContextMenu);
+    document.addEventListener("copy", handleClipboardEvent);
+    document.addEventListener("cut", handleClipboardEvent);
+    document.addEventListener("paste", handleClipboardEvent);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("contextmenu", handleContextMenu);
+      document.removeEventListener("copy", handleClipboardEvent);
+      document.removeEventListener("cut", handleClipboardEvent);
+      document.removeEventListener("paste", handleClipboardEvent);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [quiz, isSubmitted, secureModeArmed]);
+
+  useEffect(() => {
+    if (!isSubmitted || !document.fullscreenElement) {
+      return;
+    }
+
+    void document.exitFullscreen().catch(() => undefined);
+  }, [isSubmitted]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -168,48 +418,10 @@ const StudentQuizAttempt = () => {
     setAnswers((prev) => ({ ...prev, [questionId]: answer }));
   };
 
-  const handleSubmit = async () => {
-    if (!quiz) return;
-
-    // Calculate score locally
-    let totalScore = 0;
-    quiz.questions.forEach((question) => {
-      const studentAnswer = answers[question.question_id] || "";
-      // Check if answer matches any option
-      const correctOption = question.options.find((opt) => 
-        opt.option_text.toLowerCase().trim() === studentAnswer.toLowerCase().trim()
-      );
-      if (correctOption) {
-        totalScore += 1;
-      }
-    });
-
-    setScore(totalScore);
-    setIsSubmitted(true);
-    setShowResults(true);
-
-    // Submit to backend
-    try {
-      const attemptId = attempt?.attempt_id || 1;
-      const response = await fetch(`${QUIZ_API_URL}/${quiz.quiz_id}/attempts/${attemptId}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        if (result.score !== undefined) {
-          setScore(result.score);
-        }
-      }
-    } catch (err) {
-      console.error("Error submitting quiz:", err);
-    }
-  };
-
-  const getAnsweredCount = () => {
-    return Object.keys(answers).filter((key) => answers[parseInt(key)]?.trim() !== "").length;
-  };
+  const getAnsweredCount = () =>
+    Object.keys(answers).filter(
+      (key) => answers[parseInt(key, 10)]?.trim() !== "",
+    ).length;
 
   if (loading) {
     return (
@@ -240,7 +452,7 @@ const StudentQuizAttempt = () => {
   }
 
   if (showResults) {
-    const totalQuestions = quiz.questions.length;
+    const totalQuestions = Math.max(1, quiz.questions.length);
     const percentage = Math.round((score / totalQuestions) * 100);
     const passed = percentage >= 60;
 
@@ -252,7 +464,11 @@ const StudentQuizAttempt = () => {
             animate={{ opacity: 1, y: 0 }}
             className="glass-card rounded-2xl p-8 text-center"
           >
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 ${passed ? "bg-green-500/10" : "bg-red-500/10"}`}>
+            <div
+              className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 ${
+                passed ? "bg-green-500/10" : "bg-red-500/10"
+              }`}
+            >
               {passed ? (
                 <CheckCircle className="w-8 h-8 text-green-600" />
               ) : (
@@ -274,7 +490,9 @@ const StudentQuizAttempt = () => {
                 <div className="text-sm text-muted-foreground">Points Scored</div>
               </div>
               <div className="p-4 bg-purple-500/5 rounded-xl">
-                <div className="text-2xl font-bold text-purple-600">{percentage}%</div>
+                <div className="text-2xl font-bold text-purple-600">
+                  {percentage}%
+                </div>
                 <div className="text-sm text-muted-foreground">Percentage</div>
               </div>
             </div>
@@ -299,7 +517,7 @@ const StudentQuizAttempt = () => {
   }
 
   const currentQ = quiz.questions[currentQuestion];
-  const progress = ((currentQuestion + 1) / quiz.questions.length) * 100;
+  const progress = ((currentQuestion + 1) / Math.max(quiz.questions.length, 1)) * 100;
 
   return (
     <div className="min-h-screen bg-background">
@@ -316,24 +534,46 @@ const StudentQuizAttempt = () => {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-xl ${timeLeft < 300 ? "bg-red-500/10 text-red-600" : "bg-blue-500/10 text-blue-600"}`}>
+            <div
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl ${
+                timeLeft < 300
+                  ? "bg-red-500/10 text-red-600"
+                  : "bg-blue-500/10 text-blue-600"
+              }`}
+            >
               <Clock className="w-4 h-4" />
               <span className="font-mono">{formatTime(timeLeft)}</span>
             </div>
 
             <button
-              onClick={handleSubmit}
-              disabled={getAnsweredCount() === 0}
+              onClick={() => void handleSubmit("manual")}
+              disabled={
+                getAnsweredCount() === 0 || isSubmitting || !secureModeArmed
+              }
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Send className="w-4 h-4" />
-              Submit ({getAnsweredCount()}/{quiz.questions.length})
+              {isSubmitting
+                ? "Submitting..."
+                : `Submit (${getAnsweredCount()}/${quiz.questions.length})`}
             </button>
           </div>
         </div>
       </div>
 
       <div className="max-w-4xl mx-auto p-6">
+        {securityWarning ? (
+          <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700">
+            {securityWarning} Violations: {securityViolations}/3
+          </div>
+        ) : null}
+
+        {submitError ? (
+          <div className="mb-4 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+            {submitError}
+          </div>
+        ) : null}
+
         <div className="mb-6">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm text-muted-foreground">
@@ -344,7 +584,10 @@ const StudentQuizAttempt = () => {
             </span>
           </div>
           <div className="w-full bg-secondary rounded-full h-2">
-            <div className="bg-primary h-2 rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
+            <div
+              className="bg-primary h-2 rounded-full transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
           </div>
         </div>
 
@@ -379,7 +622,9 @@ const StudentQuizAttempt = () => {
                     name={`question-${currentQ.question_id}`}
                     value={option.option_text}
                     checked={answers[currentQ.question_id] === option.option_text}
-                    onChange={(e) => handleAnswerChange(currentQ.question_id, e.target.value)}
+                    onChange={(event) =>
+                      handleAnswerChange(currentQ.question_id, event.target.value)
+                    }
                     className="text-primary"
                   />
                   <span className="text-foreground">{option.option_text}</span>
@@ -388,7 +633,9 @@ const StudentQuizAttempt = () => {
             ) : (
               <textarea
                 value={answers[currentQ.question_id] || ""}
-                onChange={(e) => handleAnswerChange(currentQ.question_id, e.target.value)}
+                onChange={(event) =>
+                  handleAnswerChange(currentQ.question_id, event.target.value)
+                }
                 className="w-full p-4 rounded-xl border border-border bg-background text-foreground"
                 placeholder="Type your answer here..."
                 rows={4}
@@ -399,7 +646,9 @@ const StudentQuizAttempt = () => {
 
         <div className="flex items-center justify-between mt-6">
           <button
-            onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
+            onClick={() =>
+              setCurrentQuestion(Math.max(0, currentQuestion - 1))
+            }
             disabled={currentQuestion === 0}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -408,14 +657,14 @@ const StudentQuizAttempt = () => {
           </button>
 
           <div className="flex gap-2">
-            {quiz.questions.map((_, index) => (
+            {quiz.questions.map((question, index) => (
               <button
-                key={index}
+                key={question.question_id}
                 onClick={() => setCurrentQuestion(index)}
                 className={`w-8 h-8 rounded-lg text-sm font-medium transition-all ${
                   index === currentQuestion
                     ? "bg-primary text-primary-foreground"
-                    : answers[quiz.questions[index].question_id]
+                    : answers[question.question_id]
                       ? "bg-green-500/20 text-green-600"
                       : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
                 }`}
@@ -426,7 +675,11 @@ const StudentQuizAttempt = () => {
           </div>
 
           <button
-            onClick={() => setCurrentQuestion(Math.min(quiz.questions.length - 1, currentQuestion + 1))}
+            onClick={() =>
+              setCurrentQuestion(
+                Math.min(quiz.questions.length - 1, currentQuestion + 1),
+              )
+            }
             disabled={currentQuestion === quiz.questions.length - 1}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -435,10 +688,43 @@ const StudentQuizAttempt = () => {
           </button>
         </div>
       </div>
+
+      {!secureModeArmed || !secureModeActive ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 p-6">
+          <div className="max-w-lg rounded-2xl border border-border bg-card p-8 text-center shadow-2xl">
+            <AlertTriangle className="mx-auto mb-4 h-12 w-12 text-amber-500" />
+            <h2 className="mb-2 text-2xl font-bold text-foreground">
+              Enter Secure Quiz Mode
+            </h2>
+            <p className="mb-4 text-sm text-muted-foreground">
+              This quiz requires fullscreen mode. Tab switching, right-click,
+              copy/paste, refresh, and developer shortcuts are blocked. Three
+              violations will auto-submit the quiz.
+            </p>
+            {securityWarning ? (
+              <p className="mb-4 text-sm text-amber-700">{securityWarning}</p>
+            ) : null}
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => void enterSecureMode()}
+                className="rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                Enter Fullscreen and Start
+              </button>
+              <button
+                onClick={() => navigate("/student/quizzes")}
+                className="rounded-xl bg-secondary px-5 py-3 font-medium text-secondary-foreground hover:bg-secondary/80"
+              >
+                Exit Quiz
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <EduHubAIAgent role="student" disabled defaultOpen />
     </div>
   );
 };
 
 export default StudentQuizAttempt;
-

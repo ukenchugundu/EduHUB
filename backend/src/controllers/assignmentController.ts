@@ -6,6 +6,14 @@ import {
   isSupabaseStorageConfigured,
   uploadBufferToSupabaseStorage,
 } from "../utils/supabaseStorage";
+import {
+  facultyHasClassAccess,
+  facultyHasClassAccessInMemory,
+  getAuthUserFromRequest,
+  getFacultyClassAllocations,
+  getInMemoryFacultyClassAllocations,
+  normalizeClassName,
+} from "../utils/facultyClassAccess";
 
 interface NormalizedAssignmentPayload {
   cls: string;
@@ -88,6 +96,29 @@ const isDatabaseConnectionError = (error: unknown): boolean => {
 };
 
 const sanitizeStudentId = (value: string): string => value.trim().slice(0, 120);
+
+const buildFacultyAllowedClassSet = (
+  allocations: Array<{ className: string }>,
+): Set<string> =>
+  new Set(
+    allocations
+      .map((allocation) => normalizeClassName(allocation.className))
+      .filter(Boolean),
+  );
+
+const requireFacultyContentAccess = (
+  req: Request,
+  res: Response,
+): { userId: number; role: string } | null => {
+  const authUser = getAuthUserFromRequest(req);
+  if (!authUser || (authUser.role !== "faculty" && authUser.role !== "admin")) {
+    res.status(401).json({
+      error: "Faculty or admin authentication is required for this action.",
+    });
+    return null;
+  }
+  return authUser;
+};
 
 const resolveStudentId = (req: Request): string => {
   const bodyValue =
@@ -423,6 +454,10 @@ const sanitizeUploadedFileName = (
 };
 
 export const uploadAssignmentFile = async (req: Request, res: Response) => {
+  if (!requireFacultyContentAccess(req, res)) {
+    return;
+  }
+
   if (!isSupabaseStorageConfigured()) {
     return res.status(500).json({
       error:
@@ -507,9 +542,10 @@ export const uploadAssignmentFile = async (req: Request, res: Response) => {
 };
 
 export const getAssignments = async (req: Request, res: Response) => {
+  const authUser = getAuthUserFromRequest(req);
+
   try {
     await ensureAssignmentTables(pool);
-    await createSampleAssignmentInDb(pool);
 
     const result = await pool.query(
       `
@@ -524,11 +560,21 @@ export const getAssignments = async (req: Request, res: Response) => {
       `,
     );
 
-    return res.json(result.rows.map((row) => mapAssignmentRow(row)));
+    let rows = result.rows.map((row) => mapAssignmentRow(row));
+
+    if (authUser?.role === "faculty") {
+      const allowedClassNames = buildFacultyAllowedClassSet(
+        await getFacultyClassAllocations(pool, authUser.userId),
+      );
+      rows = rows.filter((row) =>
+        allowedClassNames.has(normalizeClassName(String(row.cls ?? ""))),
+      );
+    }
+
+    return res.json(rows);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
-      ensureSampleAssignmentInMemory();
-      const rows = inMemoryAssignments
+      let rows = inMemoryAssignments
         .map((assignment) => ({
           ...assignment,
           submission_count: inMemorySubmissions.filter(
@@ -541,6 +587,14 @@ export const getAssignments = async (req: Request, res: Response) => {
             new Date(a.due_date).getTime() - new Date(b.due_date).getTime() ||
             b.assignment_id - a.assignment_id,
         );
+      if (authUser?.role === "faculty") {
+        const allowedClassNames = buildFacultyAllowedClassSet(
+          getInMemoryFacultyClassAllocations(authUser.userId),
+        );
+        rows = rows.filter((assignment) =>
+          allowedClassNames.has(normalizeClassName(assignment.cls)),
+        );
+      }
       return res.json(rows);
     }
 
@@ -550,6 +604,11 @@ export const getAssignments = async (req: Request, res: Response) => {
 };
 
 export const createAssignment = async (req: Request, res: Response) => {
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   const normalized = normalizeAssignmentPayload(req.body);
   if (normalized.error || !normalized.payload) {
     return res
@@ -560,6 +619,16 @@ export const createAssignment = async (req: Request, res: Response) => {
   const payload = normalized.payload;
 
   try {
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(pool, authUser.userId, payload.cls))
+    ) {
+      return res.status(403).json({
+        error:
+          "You do not have access to create assignments for this class. Ask admin to allocate it first.",
+      });
+    }
+
     await ensureAssignmentTables(pool);
     const result = await pool.query(
       `
@@ -580,6 +649,16 @@ export const createAssignment = async (req: Request, res: Response) => {
     return res.status(201).json(mapAssignmentRow(result.rows[0]));
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(authUser.userId, payload.cls)
+      ) {
+        return res.status(403).json({
+          error:
+            "You do not have access to create assignments for this class. Ask admin to allocate it first.",
+        });
+      }
+
       const assignment: InMemoryAssignment = {
         assignment_id: inMemoryAssignmentId++,
         cls: payload.cls,
@@ -605,6 +684,11 @@ export const updateAssignment = async (req: Request, res: Response) => {
     return;
   }
 
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   const normalized = normalizeAssignmentPayload(req.body);
   if (normalized.error || !normalized.payload) {
     return res
@@ -616,6 +700,31 @@ export const updateAssignment = async (req: Request, res: Response) => {
 
   try {
     await ensureAssignmentTables(pool);
+    const existingAssignmentResult = await pool.query(
+      "SELECT cls FROM assignments WHERE assignment_id = $1 LIMIT 1",
+      [assignmentId],
+    );
+    const existingAssignment = existingAssignmentResult.rows[0] as
+      | { cls?: unknown }
+      | undefined;
+    if (!existingAssignment) {
+      return res.status(404).json({ error: "Assignment not found" });
+    }
+
+    if (
+      authUser.role === "faculty" &&
+      (!(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(existingAssignment.cls ?? ""),
+      )) ||
+        !(await facultyHasClassAccess(pool, authUser.userId, payload.cls)))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to update assignments for this class.",
+      });
+    }
+
     const result = await pool.query(
       `
         UPDATE assignments
@@ -659,6 +768,16 @@ export const updateAssignment = async (req: Request, res: Response) => {
         return res.status(404).json({ error: "Assignment not found" });
       }
 
+      if (
+        authUser.role === "faculty" &&
+        (!facultyHasClassAccessInMemory(authUser.userId, assignment.cls) ||
+          !facultyHasClassAccessInMemory(authUser.userId, payload.cls))
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to update assignments for this class.",
+        });
+      }
+
       assignment.cls = payload.cls;
       assignment.subject = payload.subject;
       assignment.title = payload.title;
@@ -685,8 +804,37 @@ export const deleteAssignment = async (req: Request, res: Response) => {
     return;
   }
 
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
+    return;
+  }
+
   try {
     await ensureAssignmentTables(pool);
+    const existingAssignmentResult = await pool.query(
+      "SELECT cls FROM assignments WHERE assignment_id = $1 LIMIT 1",
+      [assignmentId],
+    );
+    const existingAssignment = existingAssignmentResult.rows[0] as
+      | { cls?: unknown }
+      | undefined;
+    if (!existingAssignment) {
+      return res.status(404).json({ error: "Assignment not found" });
+    }
+
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(existingAssignment.cls ?? ""),
+      ))
+    ) {
+      return res.status(403).json({
+        error: "You do not have access to delete assignments for this class.",
+      });
+    }
+
     const result = await pool.query(
       "DELETE FROM assignments WHERE assignment_id = $1",
       [assignmentId],
@@ -704,6 +852,18 @@ export const deleteAssignment = async (req: Request, res: Response) => {
       );
       if (index === -1) {
         return res.status(404).json({ error: "Assignment not found" });
+      }
+
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(
+          authUser.userId,
+          inMemoryAssignments[index].cls,
+        )
+      ) {
+        return res.status(403).json({
+          error: "You do not have access to delete assignments for this class.",
+        });
       }
 
       inMemoryAssignments.splice(index, 1);
@@ -925,6 +1085,7 @@ export const getFacultyAssignmentSubmissions = async (
   if (optionalAssignmentId === null) {
     return;
   }
+  const authUser = getAuthUserFromRequest(req);
 
   // Mock data for testing
   const mockSubmissions = [
@@ -1049,16 +1210,34 @@ export const getFacultyAssignmentSubmissions = async (
       params,
     );
 
-    return res.json(result.rows.map((row) => mapSubmissionRow(row)));
+    let rows = result.rows.map((row) => mapSubmissionRow(row));
+    if (authUser?.role === "faculty") {
+      const allowedClassNames = buildFacultyAllowedClassSet(
+        await getFacultyClassAllocations(pool, authUser.userId),
+      );
+      rows = rows.filter((row) =>
+        allowedClassNames.has(normalizeClassName(String(row.cls ?? ""))),
+      );
+    }
+
+    return res.json(rows);
   } catch (error) {
     if (isDatabaseConnectionError(error)) {
       // Return mock data when database is unavailable
-      const filtered =
+      let filtered =
         optionalAssignmentId !== undefined
           ? mockSubmissions.filter(
               (s) => s.assignment_id === optionalAssignmentId,
             )
           : mockSubmissions;
+      if (authUser?.role === "faculty") {
+        const allowedClassNames = buildFacultyAllowedClassSet(
+          getInMemoryFacultyClassAllocations(authUser.userId),
+        );
+        filtered = filtered.filter((submission) =>
+          allowedClassNames.has(normalizeClassName(submission.cls ?? "")),
+        );
+      }
       return res.json(filtered);
     }
 
@@ -1070,6 +1249,11 @@ export const getFacultyAssignmentSubmissions = async (
 export const uploadAssignmentScore = async (req: Request, res: Response) => {
   const submissionId = parseSubmissionIdParam(req, res);
   if (!submissionId) {
+    return;
+  }
+
+  const authUser = requireFacultyContentAccess(req, res);
+  if (!authUser) {
     return;
   }
 
@@ -1105,6 +1289,20 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
     const row = rowResult.rows[0] as Record<string, unknown> | undefined;
     if (!row) {
       return res.status(404).json({ error: "Assignment submission not found" });
+    }
+
+    if (
+      authUser.role === "faculty" &&
+      !(await facultyHasClassAccess(
+        pool,
+        authUser.userId,
+        String(row.cls ?? ""),
+      ))
+    ) {
+      return res.status(403).json({
+        error:
+          "You do not have access to review submissions for this class.",
+      });
     }
 
     const maxScore = Number(row.max_score ?? 100);
@@ -1147,6 +1345,19 @@ export const uploadAssignmentScore = async (req: Request, res: Response) => {
       }
 
       const assignment = findAssignmentInMemory(submission.assignment_id);
+      if (
+        authUser.role === "faculty" &&
+        !facultyHasClassAccessInMemory(
+          authUser.userId,
+          assignment?.cls ?? "",
+        )
+      ) {
+        return res.status(403).json({
+          error:
+            "You do not have access to review submissions for this class.",
+        });
+      }
+
       const maxScore = assignment?.max_score ?? 100;
       if (score > maxScore) {
         return res

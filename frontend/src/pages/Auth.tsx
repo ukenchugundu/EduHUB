@@ -15,11 +15,7 @@ import {
   User,
   CheckCircle,
 } from "lucide-react";
-import {
-  InputOTP,
-  InputOTPGroup,
-  InputOTPSlot,
-} from "@/components/ui/input-otp";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
 
 type Role = "student" | "faculty" | "admin";
 
@@ -54,6 +50,26 @@ const roleConfig: Record<
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const STUDENT_ID_STORAGE_KEY = "eduhub_student_id";
+const demoCredentialsByRole: Record<
+  Role,
+  {
+    email: string;
+    password: string;
+  }
+> = {
+  student: {
+    email: "student@eduhub.local",
+    password: "Student@123",
+  },
+  faculty: {
+    email: "faculty@eduhub.local",
+    password: "Faculty@123",
+  },
+  admin: {
+    email: "admin@eduhub.local",
+    password: "Admin@123",
+  },
+};
 
 const parseRole = (value: string | null): Role | null => {
   if (value === "student" || value === "faculty" || value === "admin") {
@@ -77,15 +93,6 @@ interface AuthApiResponse {
   error?: string;
 }
 
-interface LoginOtpResponse {
-  otpRequired: boolean;
-  message?: string;
-  challengeId: string;
-  maskedEmail: string;
-  expiresInSeconds: number;
-  debugOtpCode?: string;
-}
-
 interface GenericMessageResponse {
   message: string;
   error?: string;
@@ -95,36 +102,25 @@ interface ForgotPasswordResponse extends GenericMessageResponse {
   debugResetLink?: string;
 }
 
-interface PendingOtpSession {
-  role: Role;
-  email: string;
-  challengeId: string;
-  maskedEmail: string;
-  debugOtpCode?: string;
-}
-
 const postJson = async <T,>(
   path: string,
   payload: Record<string, unknown>,
 ): Promise<T> => {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const data = (await response.json().catch(() => ({}))) as Record<
-    string,
-    unknown
-  >;
-  if (!response.ok) {
-    const message =
-      (typeof data.error === "string" && data.error) ||
-      "Request failed. Please try again.";
-    throw new Error(message);
-  }
-
-  return data as T;
+  return apiRequestJson<T>(
+    `${API_BASE}${path}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    {
+      fallbackError: "Request failed. Please try again.",
+      retries: 1,
+      timeoutMs: 8000,
+      includeAuth: false,
+      jsonContentType: true,
+    },
+  );
 };
 
 const persistAuth = (user: AuthApiUser, token?: string): void => {
@@ -166,9 +162,7 @@ const Auth = () => {
   const [signupEmail, setSignupEmail] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
 
-  const [otpCode, setOtpCode] = useState("");
-  const [pendingOtpSession, setPendingOtpSession] =
-    useState<PendingOtpSession | null>(null);
+  // OTP flow removed - login is now immediate with email/password
   const [debugResetLink, setDebugResetLink] = useState("");
 
   const [newPassword, setNewPassword] = useState("");
@@ -185,8 +179,6 @@ const Auth = () => {
   const clearTransientAuthState = () => {
     setAuthError("");
     setAuthMessage("");
-    setOtpCode("");
-    setPendingOtpSession(null);
     setDebugResetLink("");
   };
 
@@ -206,6 +198,14 @@ const Auth = () => {
     }
   };
 
+  const selectedDemoCredentials = selectedRole
+    ? demoCredentialsByRole[selectedRole]
+    : null;
+  const showDevLoginHint =
+    import.meta.env.DEV &&
+    authError.toLowerCase().includes("invalid credentials") &&
+    Boolean(selectedDemoCredentials);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedRole) {
@@ -218,25 +218,17 @@ const Auth = () => {
 
     try {
       const email = loginEmail.trim().toLowerCase();
-      const login = await postJson<LoginOtpResponse>("/api/auth/login", {
+      const auth = await postJson<AuthApiResponse>("/api/auth/login", {
         role: selectedRole,
         email,
         password: loginPassword,
       });
 
-      if (!login.otpRequired || !login.challengeId) {
+      if (!auth.user || !auth.token) {
         throw new Error("Invalid login response from server.");
       }
 
-      setPendingOtpSession({
-        role: selectedRole,
-        email,
-        challengeId: login.challengeId,
-        maskedEmail: login.maskedEmail,
-        debugOtpCode: login.debugOtpCode,
-      });
-      setOtpCode("");
-      setAuthMessage("");
+      completeLogin(auth.user, auth.token);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Login failed");
     } finally {
@@ -244,82 +236,6 @@ const Auth = () => {
     }
   };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pendingOtpSession) {
-      return;
-    }
-
-    if (otpCode.length !== 6) {
-      setAuthError("Please enter the 6-digit OTP.");
-      return;
-    }
-
-    setAuthError("");
-    setAuthMessage("");
-    setIsSubmitting(true);
-
-    try {
-      const auth = await postJson<AuthApiResponse>(
-        "/api/auth/login/verify-otp",
-        {
-          role: pendingOtpSession.role,
-          email: pendingOtpSession.email,
-          challengeId: pendingOtpSession.challengeId,
-          otp: otpCode,
-        },
-      );
-
-      if (!auth.user) {
-        throw new Error("Invalid OTP verification response.");
-      }
-
-      completeLogin(auth.user, auth.token);
-    } catch (error) {
-      setAuthError(
-        error instanceof Error ? error.message : "OTP verification failed",
-      );
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleResendOtp = async () => {
-    if (!pendingOtpSession) {
-      return;
-    }
-
-    setAuthError("");
-    setAuthMessage("");
-    setIsSubmitting(true);
-
-    try {
-      const login = await postJson<LoginOtpResponse>(
-        "/api/auth/login/resend-otp",
-        {
-          challengeId: pendingOtpSession.challengeId,
-        },
-      );
-
-      setPendingOtpSession((prev) =>
-        prev
-          ? {
-              ...prev,
-              maskedEmail: login.maskedEmail || prev.maskedEmail,
-              debugOtpCode: login.debugOtpCode,
-            }
-          : prev,
-      );
-      setOtpCode("");
-      setAuthMessage(login.message || "A new 6-digit code has been sent.");
-    } catch (error) {
-      setAuthError(
-        error instanceof Error ? error.message : "Unable to resend OTP",
-      );
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -393,8 +309,6 @@ const Auth = () => {
       setSelectedRole(nextRole);
       setIsCreatingAccount(false);
       setIsForgotPassword(false);
-      setPendingOtpSession(null);
-      setOtpCode("");
       setShowPassword(false);
       setAuthError("");
       setAuthMessage(
@@ -544,7 +458,7 @@ const Auth = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.8 }}
-            className="text-white/60 text-base font-medium bg-gradient-to-r from-purple-200 to-indigo-200 bg-clip-text text-transparent"
+            className="text-white/60 text-base font-medium bg-gradient-to-r from-purple-200 to-indigo-200 bg-clip-text"
           >
             Your Learning Journey Starts Here
           </motion.p>
@@ -731,7 +645,6 @@ const Auth = () => {
           {selectedRole &&
             !isCreatingAccount &&
             !isForgotPassword &&
-            !pendingOtpSession &&
             !isResetMode && (
               <motion.div
                 key="login"
@@ -767,6 +680,19 @@ const Auth = () => {
                       className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm"
                     >
                       {authError}
+                    </motion.div>
+                  )}
+                  {showDevLoginHint && selectedDemoCredentials && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mb-4 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-200"
+                    >
+                      Local seeded login for {roleConfig[selectedRole].label.toLowerCase()}:
+                      {" "}
+                      {selectedDemoCredentials.email}
+                      {" / "}
+                      {selectedDemoCredentials.password}
                     </motion.div>
                   )}
                   {authMessage && (
@@ -880,102 +806,6 @@ const Auth = () => {
               </motion.div>
             )}
 
-          {selectedRole && pendingOtpSession && !isResetMode && (
-            <motion.div
-              key="otp"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 border border-white/10 shadow-2xl"
-            >
-              <div className="flex items-center gap-3 mb-6">
-                <button
-                  onClick={() => {
-                    setPendingOtpSession(null);
-                    setOtpCode("");
-                    setAuthError("");
-                    setAuthMessage("");
-                  }}
-                  className="text-white/40 hover:text-white transition-colors"
-                >
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                <h2 className="font-heading text-xl font-bold text-white">
-                  Verify OTP
-                </h2>
-                <ShieldCheck className="w-5 h-5 text-violet-400 ml-auto" />
-              </div>
-
-              {authError && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm"
-                >
-                  {authError}
-                </motion.div>
-              )}
-              {authMessage && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mb-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm"
-                >
-                  {authMessage}
-                </motion.div>
-              )}
-
-              <p className="text-sm text-white/60 mb-6">Enter the 6-digit code</p>
-
-              {pendingOtpSession.debugOtpCode && (
-                <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
-                  <p className="text-xs text-amber-300">
-                    Dev OTP:{" "}
-                    <span className="font-semibold text-lg">
-                      {pendingOtpSession.debugOtpCode}
-                    </span>
-                  </p>
-                </div>
-              )}
-
-              <div className="flex justify-center mb-6">
-                <InputOTP
-                  maxLength={6}
-                  value={otpCode}
-                  onChange={setOtpCode}
-                  disabled={isSubmitting}
-                >
-                  <InputOTPGroup className="gap-2">
-                    {Array.from({ length: 6 }).map((_, index) => (
-                      <InputOTPSlot
-                        key={index}
-                        index={index}
-                        className="h-14 w-12 rounded-xl border border-white/20 bg-white/5 text-white text-lg"
-                      />
-                    ))}
-                  </InputOTPGroup>
-                </InputOTP>
-              </div>
-
-              <button
-                type="submit"
-                onClick={handleVerifyOtp}
-                disabled={isSubmitting || otpCode.length !== 6}
-                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-semibold hover:shadow-lg hover:shadow-purple-500/25 transition-all duration-300 disabled:opacity-70 disabled:cursor-not-allowed mb-4"
-              >
-                {isSubmitting ? "Verifying..." : "Verify OTP"}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleResendOtp}
-                disabled={isSubmitting}
-                className="w-full text-sm text-purple-400 hover:text-purple-300 transition-colors disabled:opacity-70"
-              >
-                Didn't receive the code? Resend OTP
-              </button>
-            </motion.div>
-          )}
 
           {selectedRole && isForgotPassword && !isResetMode && (
             <motion.div

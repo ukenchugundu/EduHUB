@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
@@ -27,6 +27,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { readStoredAuth } from "@/lib/authSession";
+import {
+  fetchFacultyClassAllocations,
+  getFacultyClassOptionKey,
+  mergeFacultyClassAllocationOptions,
+  type FacultyClassAllocationOption,
+} from "@/lib/facultyClassAllocations";
 
 interface ApiErrorResponse {
   error?: string;
@@ -53,6 +60,14 @@ interface NoteUploadResponse {
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+const buildAuthHeaders = (includeJsonContentType = false): HeadersInit => {
+  const token = readStoredAuth()?.token?.trim();
+  return {
+    ...(includeJsonContentType ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+};
 
 const withTimeoutSignal = (
   timeoutMs = 6000,
@@ -91,6 +106,7 @@ const fetchNotes = async (signal?: AbortSignal): Promise<NoteItem[]> => {
 
   try {
     const response = await fetch(`${API_BASE}/api/notes`, {
+      headers: buildAuthHeaders(false),
       signal: request.signal,
     });
     if (!response.ok) {
@@ -159,7 +175,6 @@ const FacultyNotes = () => {
   >(null);
   const [classNotesSummaryDialogOpen, setClassNotesSummaryDialogOpen] =
     useState(false);
-  const [showCustomClass, setShowCustomClass] = useState(false);
   const [showCustomSubject, setShowCustomSubject] = useState(false);
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<
     string | null
@@ -180,6 +195,11 @@ const FacultyNotes = () => {
   });
   const [editSelectedFile, setEditSelectedFile] = useState<File | null>(null);
   const [editFileInputKey, setEditFileInputKey] = useState(0);
+  const [classOptions, setClassOptions] = useState<FacultyClassAllocationOption[]>(
+    [],
+  );
+  const [loadingClassOptions, setLoadingClassOptions] = useState(false);
+  const [classOptionsError, setClassOptionsError] = useState("");
 
   const notesQuery = useQuery<NoteItem[], Error>({
     queryKey: ["notes"],
@@ -190,6 +210,34 @@ const FacultyNotes = () => {
     retry: 1,
   });
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadClassOptions = async () => {
+      setLoadingClassOptions(true);
+      setClassOptionsError("");
+      try {
+        const options = await fetchFacultyClassAllocations(controller.signal);
+        setClassOptions(options);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setClassOptions([]);
+        setClassOptionsError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load assigned classes.",
+        );
+      } finally {
+        setLoadingClassOptions(false);
+      }
+    };
+
+    void loadClassOptions();
+    return () => controller.abort();
+  }, []);
+
   const createMutation = useMutation({
     mutationFn: async () => {
       let resolvedFileUrl = "";
@@ -197,7 +245,7 @@ const FacultyNotes = () => {
         const fileBase64 = await fileToBase64(selectedFile);
         const uploadResponse = await fetch(`${API_BASE}/api/notes/upload`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders(true),
           body: JSON.stringify({
             fileName: selectedFile.name,
             mimeType: selectedFile.type || "application/octet-stream",
@@ -223,7 +271,7 @@ const FacultyNotes = () => {
 
       const response = await fetch(`${API_BASE}/api/notes`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildAuthHeaders(true),
         body: JSON.stringify({
           cls: form.cls,
           subject: form.subject,
@@ -260,6 +308,7 @@ const FacultyNotes = () => {
     mutationFn: async (noteId: number) => {
       const response = await fetch(`${API_BASE}/api/notes/${noteId}`, {
         method: "DELETE",
+        headers: buildAuthHeaders(false),
       });
       if (!response.ok) {
         const message = await readApiErrorMessage(
@@ -289,7 +338,7 @@ const FacultyNotes = () => {
         const fileBase64 = await fileToBase64(editSelectedFile);
         const uploadResponse = await fetch(`${API_BASE}/api/notes/upload`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders(true),
           body: JSON.stringify({
             fileName: editSelectedFile.name,
             mimeType: editSelectedFile.type || "application/octet-stream",
@@ -319,7 +368,7 @@ const FacultyNotes = () => {
         `${API_BASE}/api/notes/${editingNote.note_id}`,
         {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders(true),
           body: JSON.stringify({
             cls: editForm.cls,
             subject: editForm.subject,
@@ -377,6 +426,40 @@ const FacultyNotes = () => {
   const totalNotes = notes.length;
   const uniqueSubjects = [...new Set(notes.map((note) => note.subject))];
   const uniqueClasses = [...new Set(notes.map((note) => note.cls))];
+  const createClassOptions = useMemo(
+    () =>
+      mergeFacultyClassAllocationOptions([
+        ...classOptions,
+        ...uniqueClasses.map((className) => ({
+          className,
+          batchId: null,
+          department: "",
+          academicYear: "",
+          section: "",
+          studentCount: 0,
+        })),
+      ]),
+    [classOptions, uniqueClasses],
+  );
+  const editClassOptions = useMemo(
+    () =>
+      mergeFacultyClassAllocationOptions([
+        ...createClassOptions,
+        ...(editForm.cls
+          ? [
+              {
+                className: editForm.cls,
+                batchId: null,
+                department: "",
+                academicYear: "",
+                section: "",
+                studentCount: 0,
+              },
+            ]
+          : []),
+      ]),
+    [createClassOptions, editForm.cls],
+  );
 
   const filteredNotes = useMemo(() => {
     if (selectedSubjectFilter) {
@@ -496,41 +579,34 @@ const FacultyNotes = () => {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent className="w-full">
-                    {uniqueClasses.length > 0 ? (
-                      uniqueClasses.map((cls) => (
+                    {createClassOptions.length > 0 ? (
+                      createClassOptions.map((allocation) => (
                         <DropdownMenuItem
-                          key={cls}
+                          key={getFacultyClassOptionKey(allocation)}
                           onClick={() => {
-                            setForm({ ...form, cls });
-                            setShowCustomClass(false);
+                            setForm({
+                              ...form,
+                              cls: allocation.className,
+                            });
                           }}
                         >
-                          {cls}
+                          {allocation.className}
                         </DropdownMenuItem>
                       ))
                     ) : (
                       <DropdownMenuItem disabled>
-                        No classes available
+                        {loadingClassOptions
+                          ? "Loading assigned classes..."
+                          : "No assigned classes available"}
                       </DropdownMenuItem>
                     )}
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setShowCustomClass(true);
-                        setForm({ ...form, cls: "" });
-                      }}
-                    >
-                      Custom Class...
-                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                {showCustomClass && (
-                  <Input
-                    placeholder="Enter custom class"
-                    className="mt-2 rounded-xl"
-                    value={form.cls}
-                    onChange={(e) => setForm({ ...form, cls: e.target.value })}
-                  />
-                )}
+                {classOptionsError ? (
+                  <p className="mt-2 text-xs text-destructive">
+                    {classOptionsError}
+                  </p>
+                ) : null}
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">
@@ -1087,13 +1163,51 @@ const FacultyNotes = () => {
             </DialogHeader>
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Input
-                  placeholder="Class (e.g., III CSE-A)"
-                  value={editForm.cls}
-                  onChange={(e) =>
-                    setEditForm({ ...editForm, cls: e.target.value })
-                  }
-                />
+                <div className="space-y-2">
+                  <select
+                    value={
+                      editForm.cls
+                        ? getFacultyClassOptionKey({
+                            className: editForm.cls,
+                            batchId: null,
+                          })
+                        : ""
+                    }
+                    onChange={(event) => {
+                      const selected = editClassOptions.find(
+                        (option) =>
+                          getFacultyClassOptionKey(option) === event.target.value,
+                      );
+                      setEditForm({
+                        ...editForm,
+                        cls: selected?.className ?? "",
+                      });
+                    }}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    disabled={loadingClassOptions || editClassOptions.length === 0}
+                  >
+                    <option value="">
+                      {loadingClassOptions
+                        ? "Loading assigned classes..."
+                        : editClassOptions.length === 0
+                          ? "No assigned classes available"
+                          : "Select assigned class"}
+                    </option>
+                    {editClassOptions.map((option) => (
+                      <option
+                        key={getFacultyClassOptionKey(option)}
+                        value={getFacultyClassOptionKey(option)}
+                      >
+                        {option.className}
+                      </option>
+                    ))}
+                  </select>
+                  {classOptionsError ? (
+                    <p className="text-xs text-destructive">
+                      {classOptionsError}
+                    </p>
+                  ) : null}
+                </div>
                 <Input
                   placeholder="Subject"
                   value={editForm.subject}

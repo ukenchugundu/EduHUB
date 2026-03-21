@@ -1,6 +1,8 @@
 import express from "express";
 import { authenticateToken } from "../middlewares/auth";
 import {
+  autoGenerateBatchTimetable,
+  clearBatchTimetableEntries,
   createTimetableEntry,
   getBatchTimetableEntries,
   getFacultyNextTimetableClass,
@@ -14,6 +16,16 @@ router.get("/student/schedule", authenticateToken, getStudentTimetableSchedule);
 router.get("/faculty/today", authenticateToken, getFacultyTodayTimetable);
 router.get("/faculty/next", authenticateToken, getFacultyNextTimetableClass);
 router.get("/batches/:batchId/entries", authenticateToken, getBatchTimetableEntries);
+router.delete(
+  "/batches/:batchId/entries",
+  authenticateToken,
+  clearBatchTimetableEntries,
+);
+router.post(
+  "/batches/:batchId/auto-generate",
+  authenticateToken,
+  autoGenerateBatchTimetable,
+);
 router.post("/entries", authenticateToken, createTimetableEntry);
 
 export default router;

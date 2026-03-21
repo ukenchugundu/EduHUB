@@ -1,390 +1,352 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { BookOpen, Code2, FileText, Loader2, Search } from "lucide-react";
 import FacultyLayout from "@/components/FacultyLayout";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  Clock,
-  Calendar,
-  BookOpen,
-  FileText,
-  Target,
-  Filter,
-  X,
-  Users,
-  Timer,
-  Award,
-  CheckCircle,
-  Search,
-} from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { readStoredAuth } from "@/lib/authSession";
+
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+interface AssignmentItem {
+  assignment_id: number;
+  title: string;
+  cls: string;
+  subject: string;
+  due_date: string;
+}
+
+interface QuizItem {
+  id?: number;
+  quiz_id?: number;
+  title?: string;
+  cls?: string;
+  duration?: string;
+  status?: string;
+}
+
+interface TestItem {
+  id: number;
+  title: string;
+  description: string;
+  duration_minutes: number;
+  created_at?: string;
+  is_active: boolean;
+}
+
+const requestJson = async <T,>(path: string): Promise<T> => {
+  const token = readStoredAuth()?.token?.trim();
+  return apiRequestJson<T>(
+    `${API_BASE}${path}`,
+    {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    },
+    {
+      fallbackError: "Failed to load faculty history.",
+      retries: 1,
+      timeoutMs: 8000,
+      includeAuth: false,
+    },
+  );
+};
+
+const formatDateTime = (value: string | null | undefined) => {
+  if (!value) {
+    return "Not available";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
+};
 
 const FacultyHistory = () => {
-  const [history, setHistory] = useState([]);
+  const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
+  const [quizzes, setQuizzes] = useState<QuizItem[]>([]);
+  const [tests, setTests] = useState<TestItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadHistory = async () => {
+    setLoading(true);
+    setError("");
+
+    const [assignmentResult, quizResult, testResult] = await Promise.allSettled([
+      requestJson<AssignmentItem[]>("/api/assignments"),
+      requestJson<QuizItem[]>("/api/quizzes"),
+      requestJson<TestItem[]>("/api/faculty/tests"),
+    ]);
+
+    setAssignments(
+      assignmentResult.status === "fulfilled" &&
+        Array.isArray(assignmentResult.value)
+        ? assignmentResult.value
+        : [],
+    );
+    setQuizzes(
+      quizResult.status === "fulfilled" && Array.isArray(quizResult.value)
+        ? quizResult.value
+        : [],
+    );
+    setTests(
+      testResult.status === "fulfilled" && Array.isArray(testResult.value)
+        ? testResult.value
+        : [],
+    );
+
+    const errors = [assignmentResult, quizResult, testResult]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) =>
+        result.reason instanceof Error
+          ? result.reason.message
+          : "Failed to load faculty history.",
+      );
+
+    setError(
+      errors.length === 0
+        ? ""
+        : errors.length === 3
+          ? errors[0]
+          : "Some items could not be refreshed. Showing available data.",
+    );
+    setLoading(false);
+  };
 
   useEffect(() => {
-    const storedTasks = JSON.parse(
-      localStorage.getItem("faculty_tasks") || "[]",
-    );
-    setHistory(
-      storedTasks.sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      ),
-    );
+    void loadHistory();
   }, []);
 
-  const handleItemClick = (item) => {
-    setSelectedItem(item);
-    setIsDialogOpen(true);
-  };
+  const normalizedQuery = searchQuery.trim().toLowerCase();
 
-  const filteredHistory = history.filter(
-    (item) =>
-      item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (item.subject &&
-        item.subject.toLowerCase().includes(searchQuery.toLowerCase())),
+  const filteredAssignments = useMemo(
+    () =>
+      assignments.filter((item) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+        return [item.title, item.cls, item.subject]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedQuery);
+      }),
+    [assignments, normalizedQuery],
   );
 
-  const getIcon = (type) => {
-    switch (type) {
-      case "quiz":
-        return BookOpen;
-      case "test":
-        return Target;
-      case "assignment":
-        return FileText;
-      case "event":
-        return Calendar;
-      default:
-        return Clock;
-    }
-  };
+  const filteredQuizzes = useMemo(
+    () =>
+      quizzes.filter((item) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+        return [item.title ?? "", item.cls ?? "", item.status ?? ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedQuery);
+      }),
+    [quizzes, normalizedQuery],
+  );
+
+  const filteredTests = useMemo(
+    () =>
+      tests.filter((item) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+        return [item.title, item.description]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedQuery);
+      }),
+    [tests, normalizedQuery],
+  );
 
   return (
     <FacultyLayout title="Creation History">
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <p className="text-muted-foreground">
-            View all your previous creations and activities
-          </p>
-          <div className="relative w-64">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Search history..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 rounded-xl bg-secondary/50 border-transparent focus:bg-background focus:border-primary/20 focus:ring-2 focus:ring-primary/20 transition-all text-sm outline-none"
-            />
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-2xl font-heading font-bold text-foreground">
+              Faculty History
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              This page now reads assignments, quizzes, and coding tests directly
+              from the database.
+            </p>
           </div>
+          <Button variant="outline" onClick={() => void loadHistory()}>
+            Refresh
+          </Button>
         </div>
 
-        <div className="grid gap-4">
-          {filteredHistory.length === 0 ? (
-            <div className="text-center py-20 glass-card rounded-2xl">
-              <Clock className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-20" />
-              <p className="text-muted-foreground">No history records found.</p>
-            </div>
-          ) : (
-            filteredHistory.map((item, index) => {
-              const Icon = getIcon(item.type);
-              return (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                  className="glass-card rounded-xl p-4 flex items-center justify-between group hover:shadow-lg transition-all cursor-pointer"
-                  onClick={() => handleItemClick(item)}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search by title, class, subject, or status"
+            className="w-full rounded-xl border border-border bg-background py-3 pl-10 pr-4 text-sm"
+          />
+        </div>
+
+        {error ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="glass-card rounded-2xl border border-border/50 p-12 text-center">
+            <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">
+              Loading history from database-backed content...
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {[
+                {
+                  label: "Assignments",
+                  value: filteredAssignments.length,
+                  icon: FileText,
+                },
+                { label: "Quizzes", value: filteredQuizzes.length, icon: BookOpen },
+                { label: "Coding Tests", value: filteredTests.length, icon: Code2 },
+              ].map((card) => (
+                <div
+                  key={card.label}
+                  className="glass-card rounded-2xl border border-border/50 p-5"
                 >
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Icon className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-foreground">
-                        {item.title}
-                      </h3>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                        <span className="flex items-center gap-1 capitalize">
-                          {item.type}
-                        </span>
-                        <span>•</span>
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-3 h-3" />
-                          {new Date(item.createdAt).toLocaleDateString()}
-                        </span>
-                        <span>•</span>
-                        <span>{item.subject || item.eventType}</span>
-                      </div>
-                    </div>
+                  <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                    <card.icon className="h-5 w-5" />
                   </div>
-                  <div className="text-right">
-                    <span className="text-xs px-2 py-1 rounded-full bg-green-500/10 text-green-600 font-medium">
-                      Created
-                    </span>
-                  </div>
-                </motion.div>
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Detail Dialog */}
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-          {selectedItem && (
-            <>
-              <DialogHeader>
-                <DialogTitle className="text-2xl font-bold flex items-center gap-3">
-                  {(() => {
-                    const Icon = getIcon(selectedItem.type);
-                    return <Icon className="w-6 h-6 text-primary" />;
-                  })()}
-                  {selectedItem.title}
-                </DialogTitle>
-              </DialogHeader>
-
-              <div className="space-y-6 mt-4">
-                {/* Basic Info */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="glass-card p-4 rounded-lg">
-                    <div className="text-xs text-muted-foreground mb-1">
-                      Type
-                    </div>
-                    <div className="font-semibold capitalize">
-                      {selectedItem.type}
-                    </div>
-                  </div>
-                  <div className="glass-card p-4 rounded-lg">
-                    <div className="text-xs text-muted-foreground mb-1">
-                      Created Date
-                    </div>
-                    <div className="font-semibold">
-                      {new Date(selectedItem.createdAt).toLocaleDateString(
-                        "en-US",
-                        {
-                          year: "numeric",
-                          month: "long",
-                          day: "numeric",
-                        },
-                      )}
-                    </div>
-                  </div>
-                  {selectedItem.subject && (
-                    <div className="glass-card p-4 rounded-lg">
-                      <div className="text-xs text-muted-foreground mb-1">
-                        Subject
-                      </div>
-                      <div className="font-semibold">
-                        {selectedItem.subject}
-                      </div>
-                    </div>
-                  )}
-                  {selectedItem.duration && (
-                    <div className="glass-card p-4 rounded-lg">
-                      <div className="text-xs text-muted-foreground mb-1">
-                        Duration
-                      </div>
-                      <div className="font-semibold flex items-center gap-1">
-                        <Timer className="w-4 h-4" />
-                        {selectedItem.duration}
-                      </div>
-                    </div>
-                  )}
+                  <p className="text-xs text-muted-foreground">{card.label}</p>
+                  <p className="mt-1 text-2xl font-heading font-bold text-foreground">
+                    {card.value}
+                  </p>
                 </div>
+              ))}
+            </div>
 
-                {/* Description */}
-                {selectedItem.description && (
-                  <div className="glass-card p-4 rounded-lg">
-                    <div className="text-xs text-muted-foreground mb-2">
-                      Description
-                    </div>
-                    <p className="text-sm leading-relaxed">
-                      {selectedItem.description}
-                    </p>
-                  </div>
-                )}
-
-                {/* Quiz/Test Specific Details */}
-                {(selectedItem.type === "quiz" ||
-                  selectedItem.type === "test") && (
-                  <div className="glass-card p-4 rounded-lg">
-                    <div className="text-xs text-muted-foreground mb-3">
-                      Assessment Details
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      {selectedItem.questions && (
-                        <div className="flex items-center gap-2">
-                          <BookOpen className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            <span className="font-semibold">
-                              {selectedItem.questions}
-                            </span>{" "}
-                            Questions
-                          </span>
-                        </div>
-                      )}
-                      {selectedItem.totalMarks && (
-                        <div className="flex items-center gap-2">
-                          <Award className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            <span className="font-semibold">
-                              {selectedItem.totalMarks}
-                            </span>{" "}
-                            Total Marks
-                          </span>
-                        </div>
-                      )}
-                      {selectedItem.difficulty && (
-                        <div className="flex items-center gap-2">
-                          <Target className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Difficulty:{" "}
-                            <span className="font-semibold capitalize">
-                              {selectedItem.difficulty}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                      {selectedItem.passingMarks && (
-                        <div className="flex items-center gap-2">
-                          <CheckCircle className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Passing:{" "}
-                            <span className="font-semibold">
-                              {selectedItem.passingMarks}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Assignment Specific Details */}
-                {selectedItem.type === "assignment" && (
-                  <div className="glass-card p-4 rounded-lg">
-                    <div className="text-xs text-muted-foreground mb-3">
-                      Assignment Details
-                    </div>
-                    <div className="space-y-2">
-                      {selectedItem.dueDate && (
-                        <div className="flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Due Date:{" "}
-                            <span className="font-semibold">
-                              {selectedItem.dueDate}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                      {selectedItem.maxMarks && (
-                        <div className="flex items-center gap-2">
-                          <Award className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Max Marks:{" "}
-                            <span className="font-semibold">
-                              {selectedItem.maxMarks}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                      {selectedItem.submissionType && (
-                        <div className="flex items-center gap-2">
-                          <FileText className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Submission Type:{" "}
-                            <span className="font-semibold capitalize">
-                              {selectedItem.submissionType}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Event Specific Details */}
-                {selectedItem.type === "event" && (
-                  <div className="glass-card p-4 rounded-lg">
-                    <div className="text-xs text-muted-foreground mb-3">
-                      Event Details
-                    </div>
-                    <div className="space-y-2">
-                      {selectedItem.eventType && (
-                        <div className="flex items-center gap-2">
-                          <Target className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Event Type:{" "}
-                            <span className="font-semibold capitalize">
-                              {selectedItem.eventType}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                      {selectedItem.location && (
-                        <div className="flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Location:{" "}
-                            <span className="font-semibold">
-                              {selectedItem.location}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                      {selectedItem.attendees && (
-                        <div className="flex items-center gap-2">
-                          <Users className="w-4 h-4 text-primary" />
-                          <span className="text-sm">
-                            Expected Attendees:{" "}
-                            <span className="font-semibold">
-                              {selectedItem.attendees}
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Additional Notes */}
-                {selectedItem.notes && (
-                  <div className="glass-card p-4 rounded-lg">
-                    <div className="text-xs text-muted-foreground mb-2">
-                      Additional Notes
-                    </div>
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      {selectedItem.notes}
-                    </p>
-                  </div>
-                )}
-
-                {/* Status Badge */}
-                <div className="flex items-center justify-between pt-4 border-t">
-                  <span className="text-xs text-muted-foreground">
-                    Created at{" "}
-                    {new Date(selectedItem.createdAt).toLocaleTimeString()}
-                  </span>
-                  <span className="text-xs px-3 py-1.5 rounded-full bg-green-500/10 text-green-600 font-medium">
-                    ✓ Created Successfully
-                  </span>
+            <div className="grid gap-6 lg:grid-cols-3">
+              <div className="glass-card rounded-2xl border border-border/50 p-6">
+                <div className="mb-4 flex items-center gap-2">
+                  <FileText className="h-5 w-5 text-primary" />
+                  <h2 className="text-lg font-semibold text-foreground">
+                    Assignments
+                  </h2>
                 </div>
+                {filteredAssignments.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No assignments found in the database.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredAssignments.map((item) => (
+                      <div
+                        key={item.assignment_id}
+                        className="rounded-2xl border border-border/50 bg-background/60 p-4"
+                      >
+                        <p className="font-medium text-foreground">{item.title}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {item.cls} • {item.subject}
+                        </p>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Due: {formatDateTime(item.due_date)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+
+              <div className="glass-card rounded-2xl border border-border/50 p-6">
+                <div className="mb-4 flex items-center gap-2">
+                  <BookOpen className="h-5 w-5 text-primary" />
+                  <h2 className="text-lg font-semibold text-foreground">
+                    Quizzes
+                  </h2>
+                </div>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Quiz ordering is based on the stored database rows. Older quiz
+                  schemas do not include a dedicated created timestamp.
+                </p>
+                {filteredQuizzes.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No quizzes found in the database.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredQuizzes.map((item, index) => (
+                      <div
+                        key={String(item.quiz_id ?? item.id ?? index)}
+                        className="rounded-2xl border border-border/50 bg-background/60 p-4"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-foreground">
+                            {item.title || "Untitled Quiz"}
+                          </p>
+                          <Badge variant="outline">{item.status || "Draft"}</Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          {item.cls || "No class assigned"}
+                        </p>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Duration: {item.duration || "Not set"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="glass-card rounded-2xl border border-border/50 p-6">
+                <div className="mb-4 flex items-center gap-2">
+                  <Code2 className="h-5 w-5 text-primary" />
+                  <h2 className="text-lg font-semibold text-foreground">
+                    Coding Tests
+                  </h2>
+                </div>
+                {filteredTests.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No coding tests found in the database.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredTests.map((item) => (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-border/50 bg-background/60 p-4"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-foreground">{item.title}</p>
+                          <Badge variant="outline">
+                            {item.is_active ? "Active" : "Inactive"}
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          {item.description || "Coding assessment"}
+                        </p>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Duration: {item.duration_minutes} mins • Created:{" "}
+                          {formatDateTime(item.created_at)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </FacultyLayout>
   );
 };

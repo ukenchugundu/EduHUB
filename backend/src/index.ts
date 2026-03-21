@@ -1,10 +1,9 @@
 import express, { Express, NextFunction, Request, Response } from "express";
 import cors from "cors";
+import fs from "fs";
 import path from "path";
-import { AddressInfo } from "net";
 import { Pool } from "pg";
-import Redis from "ioredis";
-import pool from "./utils/db";
+import pool, { ensureDatabaseConnection } from "./utils/db";
 import quizRoutes from "./routes/quizRoutes";
 import authRoutes from "./routes/authRoutes";
 import taskRoutes from "./routes/taskRoutes";
@@ -19,31 +18,10 @@ import { buildAllowedOrigins } from "./utils/corsOrigins";
 
 const app: Express = express();
 const defaultPort = Number(process.env.PORT) || 3000;
-const allowPortFallback = process.env.ALLOW_PORT_FALLBACK === "true";
 
 // Use real database connection
 let db: Pool | null = pool;
 console.log("[DB] Using PostgreSQL database connection");
-
-// Redis connection (optional)
-let redis: Redis | null = null;
-let redisConnected = false;
-try {
-  redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
-  redis.on("error", (err) => {
-    if (!redisConnected) {
-      console.log("[Redis] Connection failed, using in-memory cache");
-      redisConnected = true;
-      redis = null;
-    }
-  });
-  redis.on("connect", () => {
-    console.log("[Redis] Connected successfully");
-    redisConnected = true;
-  });
-} catch (error) {
-  console.log("[Redis] Redis not available, using in-memory cache");
-}
 
 // Auth middleware
 const authMiddleware = authenticateToken;
@@ -111,6 +89,28 @@ if (db) {
   app.use("/api", authMiddleware, createMockRoutes());
 }
 
+const frontendDistPath = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "frontend",
+  "dist",
+);
+const frontendIndexPath = path.join(frontendDistPath, "index.html");
+if (fs.existsSync(frontendIndexPath)) {
+  app.use(express.static(frontendDistPath));
+  app.get("*", (req: Request, res: Response) => {
+    if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) {
+      return res.status(404).json({ message: "Not found" });
+    }
+    return res.sendFile(frontendIndexPath);
+  });
+} else {
+  console.warn(
+    `[Frontend] Build not found at ${frontendIndexPath}. Run \"npm run build\" in the frontend to serve the UI from the backend.`,
+  );
+}
+
 app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
   const errorType =
     typeof error === "object" && error !== null && "type" in error
@@ -129,28 +129,27 @@ app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
 
 const startServer = (port: number) => {
   const server = app.listen(port, () => {
-    const address = server.address() as AddressInfo | null;
-    const activePort = address?.port ?? port;
-    console.log(`Server is running at http://localhost:${activePort}`);
+    console.log(`Server is running at http://localhost:${port}`);
   });
 
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
-      if (!allowPortFallback) {
-        console.error(
-          `Port ${port} is already in use. Stop the existing process on that port and restart EduHub so the frontend proxy stays aligned with the backend.`,
-        );
-        process.exit(1);
-      }
-
-      const nextPort = port + 1;
-      console.warn(`Port ${port} is in use, trying ${nextPort}...`);
-      startServer(nextPort);
-      return;
+      console.error(
+        `Port ${port} is already in use. Stop the existing process on that port and restart EduHub.`,
+      );
+      process.exit(1);
     }
 
     throw error;
   });
 };
 
-startServer(defaultPort);
+const start = async () => {
+  await ensureDatabaseConnection();
+  startServer(defaultPort);
+};
+
+start().catch((error) => {
+  console.error("[DB] Database connection failed:", error);
+  process.exit(1);
+});

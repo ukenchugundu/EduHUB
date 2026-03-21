@@ -40,8 +40,12 @@ const workspaceRoot = path.resolve(__dirname, "..", "..", "..");
 loadEnvFile(path.join(workspaceRoot, ".env"));
 loadEnvFile(path.join(workspaceRoot, "backend", ".env"));
 
-const connectionString =
-  process.env.DATABASE_URL || "postgresql://postgres:password@localhost:5432/eduhub";
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error(
+    "DATABASE_URL is required. Set it to your Supabase Postgres connection string.",
+  );
+}
 const forceSsl = process.env.DB_SSL?.toLowerCase() === "true";
 const disableSsl = process.env.DB_SSL?.toLowerCase() === "false";
 const isSupabaseConnection = connectionString.includes(".supabase.co");
@@ -54,8 +58,16 @@ const sslConfig = disableSsl
 const pool = new Pool({
   connectionString,
   ssl: sslConfig,
-  connectionTimeoutMillis: 3000,
-  idleTimeoutMillis: 10000,
+  // Increase the timeout for remote databases (e.g. Supabase) which may take longer
+  // to establish a connection compared to a local Postgres instance.
+  connectionTimeoutMillis: 15000,
+  // Keep idle connections alive a bit longer to avoid frequent reconnects.
+  idleTimeoutMillis: 30000,
 });
+
+export const ensureDatabaseConnection = async (): Promise<void> => {
+  await pool.query("SELECT 1");
+  console.log("[DB] Connected to Supabase Postgres");
+};
 
 export default pool;

@@ -2,18 +2,42 @@ import express from "express";
 import { Pool } from "pg";
 import { AntiCheatService } from "../services/AntiCheatService";
 import { CodeExecutionService } from "../services/CodeExecutionService";
+import { ensureCodingTestsSchema } from "../utils/codingTestsSchema";
+import { ensureStudentPortalContext } from "../utils/studentPortalAccess";
 
 const router = express.Router();
 
 export const createTestRoutes = (db: Pool) => {
   const antiCheatService = new AntiCheatService(db);
   const codeExecutionService = new CodeExecutionService();
+  const resolvePortalStudentId = async (authUserId: unknown): Promise<number | null> => {
+    const parsedAuthUserId = Number(authUserId);
+    if (!Number.isInteger(parsedAuthUserId) || parsedAuthUserId <= 0) {
+      return null;
+    }
+
+    const studentContext = await ensureStudentPortalContext(db, parsedAuthUserId);
+    return studentContext?.portalStudentId ?? null;
+  };
+
+  router.use(async (_req, res, next) => {
+    try {
+      await ensureCodingTestsSchema(db);
+      next();
+    } catch (error) {
+      console.error("Error preparing coding test schema:", error);
+      res.status(500).json({ error: "Failed to prepare coding tests" });
+    }
+  });
 
   // Start test attempt
   router.post("/:testId/start", async (req: any, res) => {
     try {
       const { testId } = req.params;
-      const studentId = req.user?.userId || 1; // From auth middleware
+      const studentId = await resolvePortalStudentId(req.user?.userId);
+      if (!studentId) {
+        return res.status(401).json({ error: "Invalid authenticated student." });
+      }
 
       // Check if test is active
       const testResult = await db.query(
@@ -239,7 +263,10 @@ export const createTestRoutes = (db: Pool) => {
   // Get list of available tests for student
   router.get("/available", async (req: any, res) => {
     try {
-      const studentId = req.user?.userId || 1;
+      const studentId = await resolvePortalStudentId(req.user?.userId);
+      if (!studentId) {
+        return res.status(401).json({ error: "Invalid authenticated student." });
+      }
 
       // Get all active tests that haven't ended yet
       const testsResult = await db.query(
@@ -327,7 +354,10 @@ int main() {
   // Get student's test attempts
   router.get("/my-attempts", async (req: any, res) => {
     try {
-      const studentId = req.user?.userId || 1;
+      const studentId = await resolvePortalStudentId(req.user?.userId);
+      if (!studentId) {
+        return res.status(401).json({ error: "Invalid authenticated student." });
+      }
 
       const attemptsResult = await db.query(
         `SELECT ta.*, ct.title as test_title, ct.duration_minutes

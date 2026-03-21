@@ -1,20 +1,26 @@
-import { useState, useEffect, useRef } from "react";
-import FacultyLayout from "@/components/FacultyLayout";
-import { motion } from "framer-motion";
+import { useEffect, useMemo, useState } from "react";
 import {
+  CalendarDays,
+  CheckCircle2,
   ClipboardCheck,
-  CheckCircle,
-  XCircle,
-  Save,
-  RefreshCw,
-  Clock,
-  Calendar,
-  Users,
-  BookOpen,
+  Clock3,
   Loader2,
-  Pencil,
+  RefreshCw,
+  Save,
   Shield,
+  Users,
+  XCircle,
 } from "lucide-react";
+import FacultyLayout from "@/components/FacultyLayout";
+import { requestJson as apiRequestJson } from "@/lib/apiClient";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { readStoredAuth } from "@/lib/authSession";
+
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const ATTENDANCE_STATUSES = ["present", "absent", "late", "excused"] as const;
+
+type AttendanceStatus = (typeof ATTENDANCE_STATUSES)[number];
 
 interface Department {
   id: number;
@@ -39,6 +45,7 @@ interface Subject {
 
 interface Student {
   id: number;
+  student_id?: number;
   full_name: string;
   email: string;
   roll_number: string | null;
@@ -58,1111 +65,696 @@ interface AttendanceSession {
   department_name: string;
 }
 
-const DEPARTMENTS: Department[] = [
-  { id: 1, name: "Computer Science and Engineering", code: "CSE" },
-  { id: 2, name: "Computer Science and Design", code: "CSD" },
-  { id: 3, name: "Computer Science and Mathematics", code: "CSM" },
-  { id: 4, name: "Computer Science and Communication", code: "CSC" },
-  { id: 5, name: "Electronics and Communication Engineering", code: "ECE" },
-  { id: 6, name: "Information Technology", code: "IT" },
-  { id: 7, name: "Mechanical Engineering", code: "MECH" },
-  { id: 8, name: "Civil Engineering", code: "CIVIL" },
-];
+interface AttendanceRecord {
+  session_id: number;
+  student_id: number;
+  status: AttendanceStatus;
+  full_name?: string;
+  email?: string;
+  roll_number?: string | null;
+}
 
-const YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
-const SECTIONS = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
-
-const SUBJECTS: Subject[] = [
-  { id: 1, name: "Data Structures and Algorithms", code: "DSA" },
-  { id: 2, name: "Database Management Systems", code: "DBMS" },
-  { id: 3, name: "Operating Systems", code: "OS" },
-  { id: 4, name: "Computer Networks", code: "CN" },
-  { id: 5, name: "Software Engineering", code: "SE" },
-  { id: 6, name: "Machine Learning", code: "ML" },
-  { id: 7, name: "Artificial Intelligence", code: "AI" },
-  { id: 8, name: "Web Development", code: "WD" },
-  { id: 9, name: "Mobile App Development", code: "MAD" },
-  { id: 10, name: "Cybersecurity", code: "CS" },
-];
-
-const generateAcademicYear = (year: string): string => {
-  const currentYear = new Date().getFullYear();
-  const yearNum = parseInt(year.charAt(0));
-  const startYear = currentYear - yearNum + 1;
-  return `${startYear}-${startYear + 1}`;
+const fetchJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+  const token = readStoredAuth()?.token?.trim();
+  return apiRequestJson<T>(
+    `${API_BASE}${path}`,
+    {
+      ...init,
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+    },
+    {
+      fallbackError: "Failed to load attendance data.",
+      retries: 1,
+      timeoutMs: 8000,
+      includeAuth: false,
+    },
+  );
 };
 
-const generateBatches = (deptCode: string, year: string): Batch[] => {
-  const academicYear = generateAcademicYear(year);
-  return SECTIONS.map((section, index) => ({
-    id: parseInt(
-      `${DEPARTMENTS.find((d) => d.code === deptCode)?.id || 1}${year.charAt(0)}${index + 1}`,
-    ),
-    name: `${year} ${section}`,
-    department_name: DEPARTMENTS.find((d) => d.code === deptCode)?.name || "",
-    department_code: deptCode,
-    academic_year: academicYear,
-    semester: parseInt(year.charAt(0)) * 2 - 1,
-  }));
+const formatDateTime = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 };
 
-const fetchBatchStudents = async (batchId: number): Promise<Student[]> => {
-  const mockStudents: Student[] = [
-    {
-      id: 1,
-      full_name: "Aarav Sharma",
-      email: "aarav@example.com",
-      roll_number: "21CSE001",
-    },
-    {
-      id: 2,
-      full_name: "Vivaan Patel",
-      email: "vivaan@example.com",
-      roll_number: "21CSE002",
-    },
-    {
-      id: 3,
-      full_name: "Aditya Kumar",
-      email: "aditya@example.com",
-      roll_number: "21CSE003",
-    },
-    {
-      id: 4,
-      full_name: "Vihaan Singh",
-      email: "vihaan@example.com",
-      roll_number: "21CSE004",
-    },
-    {
-      id: 5,
-      full_name: "Arjun Gupta",
-      email: "arjun@example.com",
-      roll_number: "21CSE005",
-    },
-    {
-      id: 6,
-      full_name: "Sai Reddy",
-      email: "sai@example.com",
-      roll_number: "21CSE006",
-    },
-    {
-      id: 7,
-      full_name: "Reyansh Jain",
-      email: "reyansh@example.com",
-      roll_number: "21CSE007",
-    },
-    {
-      id: 8,
-      full_name: "Ayaan Khan",
-      email: "ayaan@example.com",
-      roll_number: "21CSE008",
-    },
-    {
-      id: 9,
-      full_name: "Krishna Rao",
-      email: "krishna@example.com",
-      roll_number: "21CSE009",
-    },
-    {
-      id: 10,
-      full_name: "Ishaan Verma",
-      email: "ishaan@example.com",
-      roll_number: "21CSE010",
-    },
-  ];
-  return Promise.resolve(mockStudents);
+const getStatusBadgeClassName = (status: AttendanceStatus) => {
+  switch (status) {
+    case "present":
+      return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
+    case "absent":
+      return "bg-rose-500/10 text-rose-600 border-rose-500/20";
+    case "late":
+      return "bg-amber-500/10 text-amber-600 border-amber-500/20";
+    default:
+      return "bg-blue-500/10 text-blue-600 border-blue-500/20";
+  }
 };
 
-const fetchSessions = async (
-  batchId: number,
-  date?: string,
-  subject?: string,
-): Promise<AttendanceSession[]> => {
-  const allSessions: AttendanceSession[] = JSON.parse(
-    localStorage.getItem("attendance_sessions") || "[]",
-  );
-  let filtered = allSessions.filter((s) => s.batch_id === batchId);
-  if (date) filtered = filtered.filter((s) => s.session_date === date);
-  if (subject) filtered = filtered.filter((s) => s.subject === subject);
-  return Promise.resolve(filtered);
-};
-
-const createSession = async (
-  batchId: number,
-  subject: string,
-  topic: string,
-  sessionDate: string,
-  startTime: string,
-): Promise<AttendanceSession> => {
-  const allSessions: AttendanceSession[] = JSON.parse(
-    localStorage.getItem("attendance_sessions") || "[]",
-  );
-  const mockSession: AttendanceSession = {
-    id: Date.now(),
-    batch_id: batchId,
-    faculty_id: 1,
-    subject,
-    topic: topic || null,
-    session_date: sessionDate,
-    start_time: startTime,
-    end_time: null,
-    is_active: true,
-    batch_name: "Mock Batch",
-    department_name: "Mock Department",
-  };
-  allSessions.push(mockSession);
-  localStorage.setItem("attendance_sessions", JSON.stringify(allSessions));
-  return Promise.resolve(mockSession);
-};
-
-const markAttendance = async (
-  sessionId: number,
-  records: { studentId: number; status: string }[],
-): Promise<void> => {
-  const allRecords = JSON.parse(
-    localStorage.getItem("attendance_records") || "{}",
-  );
-  allRecords[sessionId] = records;
-  localStorage.setItem("attendance_records", JSON.stringify(allRecords));
-
-  const allSessions: AttendanceSession[] = JSON.parse(
-    localStorage.getItem("attendance_sessions") || "[]",
-  );
-  const updatedSessions = allSessions.map((s) =>
-    s.id === sessionId
-      ? {
-          ...s,
-          is_active: false,
-          end_time: new Date().toTimeString().slice(0, 5),
-        }
-      : s,
-  );
-  localStorage.setItem("attendance_sessions", JSON.stringify(updatedSessions));
-  return Promise.resolve();
+const cycleStatus = (status: AttendanceStatus): AttendanceStatus => {
+  const currentIndex = ATTENDANCE_STATUSES.indexOf(status);
+  return ATTENDANCE_STATUSES[(currentIndex + 1) % ATTENDANCE_STATUSES.length];
 };
 
 const FacultyAttendance = () => {
-  const [departments] = useState<Department[]>(DEPARTMENTS);
-  const [subjects] = useState<Subject[]>(SUBJECTS);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [sessions, setSessions] = useState<AttendanceSession[]>([]);
+  const [currentSession, setCurrentSession] = useState<AttendanceSession | null>(
+    null,
+  );
+  const [attendance, setAttendance] = useState<Record<number, AttendanceStatus>>(
+    {},
+  );
 
-  const [selectedYearLevel, setSelectedYearLevel] = useState<string>("");
-  const [selectedSection, setSelectedSection] = useState<string>("");
-  const [selectedDepartment, setSelectedDepartment] =
-    useState<Department | null>(null);
-  const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
-  const [selectedSubject, setSelectedSubject] = useState<string>("");
-  const [selectedTopic, setSelectedTopic] = useState<string>("");
-  const [localTopic, setLocalTopic] = useState<string>("");
-
-  const [selectedDate, setSelectedDate] = useState<string>(
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState("");
+  const [selectedBatchId, setSelectedBatchId] = useState("");
+  const [selectedSubject, setSelectedSubject] = useState("");
+  const [topic, setTopic] = useState("");
+  const [selectedDate, setSelectedDate] = useState(
     new Date().toISOString().split("T")[0],
   );
 
-  const [attendance, setAttendance] = useState<Record<number, string>>({});
-  const [attendanceHistory, setAttendanceHistory] = useState<
-    Record<number, string>[]
-  >([]);
-  const [currentSession, setCurrentSession] =
-    useState<AttendanceSession | null>(null);
-  const [showSummary, setShowSummary] = useState(false);
-  const [selectedFilter, setSelectedFilter] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [viewingPastSession, setViewingPastSession] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadingStudents, setLoadingStudents] = useState(false);
-  const [loadingDepartments] = useState(false);
-  const [currentStep, setCurrentStep] = useState(1);
-  const [showSuccessPopup, setShowSuccessPopup] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  useEffect(() => {
-    const updateDate = () => {
-      setSelectedDate(new Date().toISOString().split("T")[0]);
-    };
-    updateDate();
-    const interval = setInterval(updateDate, 60000);
-    return () => clearInterval(interval);
-  }, []);
+  const selectedBatch = useMemo(
+    () =>
+      batches.find((batch) => String(batch.id) === selectedBatchId) ?? null,
+    [batches, selectedBatchId],
+  );
 
-  useEffect(() => {
-    if (selectedDepartment && selectedYearLevel && selectedSection) {
-      const batch = generateBatches(
-        selectedDepartment.code,
-        selectedYearLevel,
-      ).find((b) => b.name === `${selectedYearLevel} ${selectedSection}`);
-      setSelectedBatch(batch || null);
-    }
-  }, [selectedDepartment, selectedYearLevel, selectedSection]);
+  const currentSessionClosed = currentSession ? !currentSession.is_active : true;
 
-  useEffect(() => {
-    if (selectedBatch && selectedSubject) {
-      loadStudents(selectedBatch.id);
-      loadSessions(selectedBatch.id);
-    } else {
-      setStudents([]);
-      setAttendance({});
-      setAttendanceHistory([]);
-    }
-  }, [selectedBatch, selectedSubject, selectedDate]);
+  const counts = useMemo(
+    () => ({
+      present: Object.values(attendance).filter((value) => value === "present")
+        .length,
+      absent: Object.values(attendance).filter((value) => value === "absent")
+        .length,
+      late: Object.values(attendance).filter((value) => value === "late").length,
+      excused: Object.values(attendance).filter((value) => value === "excused")
+        .length,
+    }),
+    [attendance],
+  );
 
-  useEffect(() => {
-    if (!selectedDepartment) setCurrentStep(1);
-    else if (!selectedYearLevel) setCurrentStep(2);
-    else if (!selectedSection) setCurrentStep(3);
-    else if (!selectedSubject) setCurrentStep(4);
-    else if (!selectedTopic) setCurrentStep(5);
-    else if (currentStep < 6) setCurrentStep(6);
-  }, [
-    selectedDepartment,
-    selectedYearLevel,
-    selectedSection,
-    selectedSubject,
-    selectedTopic,
-  ]);
-
-  const loadStudents = async (batchId: number) => {
-    setLoadingStudents(true);
-    try {
-      const data = await fetchBatchStudents(batchId);
-      setStudents(data);
-    } catch (err) {
-      console.error("Failed to load students:", err);
-    } finally {
-      setLoadingStudents(false);
-    }
-  };
-
-  const loadSessions = async (batchId: number) => {
-    try {
-      const data = await fetchSessions(
-        batchId,
-        selectedDate,
-        selectedSubject || undefined,
-      );
-      setSessions(data);
-    } catch (err) {
-      console.error("Failed to load sessions:", err);
-    }
-  };
-
-  const handleViewSession = async (session: AttendanceSession) => {
-    setCurrentSession(session);
-    setViewingPastSession(!session.is_active);
-    setShowSummary(!session.is_active);
-
-    const allRecords = JSON.parse(
-      localStorage.getItem("attendance_records") || "{}",
+  const initializeAttendance = (rows: Student[]) => {
+    setAttendance(
+      rows.reduce<Record<number, AttendanceStatus>>((map, student) => {
+        map[student.student_id ?? student.id] = "present";
+        return map;
+      }, {}),
     );
-    const sessionRecords = allRecords[session.id] || [];
-
-    if (sessionRecords.length > 0) {
-      const attendanceMap: Record<number, string> = {};
-      sessionRecords.forEach(
-        (record: { studentId: number; status: string }) => {
-          attendanceMap[record.studentId] = record.status;
-        },
-      );
-      setAttendance(attendanceMap);
-    } else {
-      const initialAttendance: Record<number, string> = {};
-      students.forEach((student) => {
-        initialAttendance[student.id] = "present";
-      });
-      setAttendance(initialAttendance);
-    }
   };
 
-  const handleStartSession = async (date?: string) => {
-    const targetDate = date || selectedDate;
-    if (!selectedBatch || !selectedSubject || !targetDate) {
-      setError("Please select all required fields");
-      return;
-    }
-
+  const loadDepartmentsAndSubjects = async () => {
     setLoading(true);
-    setError(null);
+    setError("");
 
     try {
-      const startTime = new Date().toTimeString().slice(0, 5);
-      const session = await createSession(
-        selectedBatch.id,
-        selectedSubject,
-        selectedTopic,
-        targetDate,
-        startTime,
+      const [departmentData, subjectData] = await Promise.all([
+        fetchJson<Department[]>("/api/attendance/departments"),
+        fetchJson<Subject[]>("/api/attendance/subjects"),
+      ]);
+
+      setDepartments(Array.isArray(departmentData) ? departmentData : []);
+      setSubjects(Array.isArray(subjectData) ? subjectData : []);
+    } catch (loadError) {
+      setDepartments([]);
+      setSubjects([]);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to load attendance metadata.",
       );
-      setCurrentSession(session);
-      setSuccess("Attendance session started!");
-
-      const initialAttendance: Record<number, string> = {};
-      students.forEach((student) => {
-        initialAttendance[student.id] = "present";
-      });
-      setAttendance(initialAttendance);
-
-      loadSessions(selectedBatch.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start session");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleToggleAttendance = (studentId: number) => {
-    if (viewingPastSession) return;
-    setAttendanceHistory((prev) => [...prev, { ...attendance }]);
-    setAttendance((prev) => {
-      const currentStatus = prev[studentId] || "present";
-      const statusOrder: string[] = ["present", "absent", "late", "permission"];
-      const currentIndex = statusOrder.indexOf(currentStatus);
-      const nextStatus = statusOrder[(currentIndex + 1) % statusOrder.length];
-      return { ...prev, [studentId]: nextStatus };
-    });
+  const loadBatches = async (departmentId: string) => {
+    if (!departmentId) {
+      setBatches([]);
+      return;
+    }
+
+    try {
+      const batchData = await fetchJson<Batch[]>(
+        `/api/attendance/batches?departmentId=${departmentId}`,
+      );
+      setBatches(Array.isArray(batchData) ? batchData : []);
+    } catch (loadError) {
+      setBatches([]);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to load batches.",
+      );
+    }
   };
 
-  const handleUndoLastChange = () => {
-    if (attendanceHistory.length > 0) {
-      const lastState = attendanceHistory[attendanceHistory.length - 1];
-      setAttendance(lastState);
-      setAttendanceHistory((prev) => prev.slice(0, -1));
+  const loadStudents = async (batchId: string) => {
+    if (!batchId) {
+      setStudents([]);
+      initializeAttendance([]);
+      return;
     }
+
+    setLoadingStudents(true);
+
+    try {
+      const studentData = await fetchJson<Student[]>(
+        `/api/attendance/batches/${batchId}/students`,
+      );
+      const rows = Array.isArray(studentData) ? studentData : [];
+      setStudents(rows);
+      initializeAttendance(rows);
+    } catch (loadError) {
+      setStudents([]);
+      initializeAttendance([]);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to load students.",
+      );
+    } finally {
+      setLoadingStudents(false);
+    }
+  };
+
+  const loadSessions = async (batchId: string, subject: string, date: string) => {
+    if (!batchId) {
+      setSessions([]);
+      return;
+    }
+
+    try {
+      const params = new URLSearchParams();
+      if (subject) {
+        params.set("subject", subject);
+      }
+      if (date) {
+        params.set("date", date);
+      }
+
+      const query = params.toString();
+      const sessionData = await fetchJson<AttendanceSession[]>(
+        `/api/attendance/batches/${batchId}/sessions${query ? `?${query}` : ""}`,
+      );
+      setSessions(Array.isArray(sessionData) ? sessionData : []);
+    } catch (loadError) {
+      setSessions([]);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to load attendance sessions.",
+      );
+    }
+  };
+
+  const loadSessionRecords = async (session: AttendanceSession) => {
+    setCurrentSession(session);
+    setSuccess("");
+
+    try {
+      const records = await fetchJson<AttendanceRecord[]>(
+        `/api/attendance/sessions/${session.id}/records`,
+      );
+
+      if (!Array.isArray(records) || records.length === 0) {
+        initializeAttendance(students);
+        return;
+      }
+
+      const nextAttendance = records.reduce<Record<number, AttendanceStatus>>(
+        (map, record) => {
+          map[record.student_id] = record.status;
+          return map;
+        },
+        {},
+      );
+
+      setAttendance(nextAttendance);
+    } catch (loadError) {
+      initializeAttendance(students);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to load session records.",
+      );
+    }
+  };
+
+  const loadAttendancePage = async () => {
+    await loadDepartmentsAndSubjects();
+    if (selectedDepartmentId) {
+      await loadBatches(selectedDepartmentId);
+    }
+    if (selectedBatchId) {
+      await Promise.all([
+        loadStudents(selectedBatchId),
+        loadSessions(selectedBatchId, selectedSubject, selectedDate),
+      ]);
+    }
+  };
+
+  useEffect(() => {
+    void loadDepartmentsAndSubjects();
+  }, []);
+
+  useEffect(() => {
+    setSelectedBatchId("");
+    setCurrentSession(null);
+    setStudents([]);
+    setSessions([]);
+    initializeAttendance([]);
+    void loadBatches(selectedDepartmentId);
+  }, [selectedDepartmentId]);
+
+  useEffect(() => {
+    setCurrentSession(null);
+    void Promise.all([
+      loadStudents(selectedBatchId),
+      loadSessions(selectedBatchId, selectedSubject, selectedDate),
+    ]);
+  }, [selectedBatchId, selectedSubject, selectedDate]);
+
+  const handleStartSession = async () => {
+    if (!selectedBatchId || !selectedSubject || !selectedDate) {
+      setError("Department, batch, subject, and date are required.");
+      return;
+    }
+
+    setError("");
+    setSuccess("");
+
+    try {
+      const createdSession = await fetchJson<AttendanceSession>(
+        "/api/attendance/sessions",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            batchId: Number(selectedBatchId),
+            subject: selectedSubject,
+            topic: topic.trim(),
+            sessionDate: selectedDate,
+            startTime: new Date().toTimeString().slice(0, 5),
+          }),
+        },
+      );
+
+      setCurrentSession(createdSession);
+      initializeAttendance(students);
+      setSuccess("Attendance session started from the database.");
+      await loadSessions(selectedBatchId, selectedSubject, selectedDate);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to start attendance session.",
+      );
+    }
+  };
+
+  const handleToggleAttendance = (studentId: number) => {
+    if (!currentSession || currentSessionClosed) {
+      return;
+    }
+
+    setAttendance((current) => ({
+      ...current,
+      [studentId]: cycleStatus(current[studentId] ?? "present"),
+    }));
   };
 
   const handleSaveAttendance = async () => {
     if (!currentSession) {
-      setError("Please start a session first");
+      setError("Start or select a session before saving attendance.");
       return;
     }
 
     setSaving(true);
-    setError(null);
+    setError("");
+    setSuccess("");
 
     try {
-      const records = Object.entries(attendance).map(([studentId, status]) => ({
-        studentId: parseInt(studentId),
-        status,
-      }));
-      await markAttendance(currentSession.id, records);
-      setShowSummary(true);
-      setShowSuccessPopup(true);
-    } catch (err) {
+      await fetchJson<{ message: string }>(
+        `/api/attendance/sessions/${currentSession.id}/mark`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            records: Object.entries(attendance).map(([studentId, status]) => ({
+              studentId: Number(studentId),
+              status,
+            })),
+          }),
+        },
+      );
+
+      const closedSession = {
+        ...currentSession,
+        is_active: false,
+      };
+      setCurrentSession(closedSession);
+      setSuccess("Attendance saved permanently to the database.");
+      await loadSessions(selectedBatchId, selectedSubject, selectedDate);
+      await loadSessionRecords(closedSession);
+    } catch (loadError) {
       setError(
-        err instanceof Error ? err.message : "Failed to save attendance",
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to save attendance.",
       );
     } finally {
       setSaving(false);
     }
   };
 
-  const handleResetSteps = () => {
-    setSelectedDepartment(null);
-    setSelectedYearLevel("");
-    setSelectedSection("");
-    setSelectedBatch(null);
-    setSelectedSubject("");
-    setSelectedTopic("");
-    setLocalTopic("");
-    setStudents([]);
-    setAttendance({});
-    setAttendanceHistory([]);
-    setSessions([]);
-    setCurrentSession(null);
-    setCurrentStep(1);
-    setError(null);
-    setSuccess(null);
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "present":
-        return "text-accent";
-      case "absent":
-        return "text-destructive";
-      case "late":
-        return "text-yellow-500";
-      case "permission":
-        return "text-blue-500";
-      default:
-        return "text-muted-foreground";
-    }
-  };
-
-  const getStatusBg = (status: string) => {
-    switch (status) {
-      case "present":
-        return "bg-accent/10 border-accent/30";
-      case "absent":
-        return "bg-destructive/10 border-destructive/30";
-      case "late":
-        return "bg-yellow-500/10 border-yellow-500/30";
-      case "permission":
-        return "bg-blue-500/10 border-blue-500/30";
-      default:
-        return "bg-secondary";
-    }
-  };
-
-  const presentCount = Object.values(attendance).filter(
-    (s) => s === "present",
-  ).length;
-  const absentCount = Object.values(attendance).filter(
-    (s) => s === "absent",
-  ).length;
-  const lateCount = Object.values(attendance).filter(
-    (s) => s === "late",
-  ).length;
-  const permissionCount = Object.values(attendance).filter(
-    (s) => s === "permission",
-  ).length;
-
-  const getStepTitle = (step: number) => {
-    switch (step) {
-      case 1:
-        return "Select Department";
-      case 2:
-        return "Select Year";
-      case 3:
-        return "Select Section";
-      case 4:
-        return "Select Subject";
-      case 5:
-        return "Enter Topic & Date";
-      case 6:
-        return "Mark Attendance";
-      default:
-        return "";
-    }
-  };
-
   return (
     <FacultyLayout title="Attendance Management">
       <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl gradient-accent flex items-center justify-center">
-              <ClipboardCheck className="w-6 h-6 text-white" />
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl gradient-accent">
+              <ClipboardCheck className="h-6 w-6 text-white" />
             </div>
             <div>
               <h1 className="text-2xl font-heading font-bold text-foreground">
                 Attendance Management
               </h1>
               <p className="text-sm text-muted-foreground">
-                Mark and track student attendance efficiently
+                Departments, batches, students, and saved sessions now come only from
+                the database.
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground bg-secondary/50 px-3 py-2 rounded-xl">
-              <Clock className="w-3 h-3" />
-              {new Date().toLocaleDateString()}
-            </div>
-          </div>
+          <Button variant="outline" onClick={() => void loadAttendancePage()}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Refresh
+          </Button>
         </div>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          <button
-            onClick={() =>
-              currentSession &&
-              students.length > 0 &&
-              setSelectedFilter(selectedFilter === "present" ? null : "present")
-            }
-            className={`glass-card rounded-2xl p-4 hover:shadow-lg transition-all ${currentSession && students.length > 0 ? "cursor-pointer" : "cursor-default"} ${selectedFilter === "present" ? "ring-2 ring-green-500/30 bg-green-500/5" : ""}`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
-                <CheckCircle className="w-5 h-5 text-green-500" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-foreground">
-                  {presentCount}
-                </div>
-                <div className="text-xs text-muted-foreground">Present</div>
-              </div>
-            </div>
-          </button>
-          <button
-            onClick={() =>
-              currentSession &&
-              students.length > 0 &&
-              setSelectedFilter(selectedFilter === "absent" ? null : "absent")
-            }
-            className={`glass-card rounded-2xl p-4 hover:shadow-lg transition-all ${currentSession && students.length > 0 ? "cursor-pointer" : "cursor-default"} ${selectedFilter === "absent" ? "ring-2 ring-red-500/30 bg-red-500/5" : ""}`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center">
-                <XCircle className="w-5 h-5 text-red-500" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-foreground">
-                  {absentCount}
-                </div>
-                <div className="text-xs text-muted-foreground">Absent</div>
-              </div>
-            </div>
-          </button>
-          <button
-            onClick={() =>
-              currentSession &&
-              students.length > 0 &&
-              setSelectedFilter(selectedFilter === "late" ? null : "late")
-            }
-            className={`glass-card rounded-2xl p-4 hover:shadow-lg transition-all ${currentSession && students.length > 0 ? "cursor-pointer" : "cursor-default"} ${selectedFilter === "late" ? "ring-2 ring-yellow-500/30 bg-yellow-500/5" : ""}`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-yellow-500/10 flex items-center justify-center">
-                <Clock className="w-5 h-5 text-yellow-500" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-foreground">
-                  {lateCount}
-                </div>
-                <div className="text-xs text-muted-foreground">Late</div>
-              </div>
-            </div>
-          </button>
-          <button
-            onClick={() =>
-              currentSession &&
-              students.length > 0 &&
-              setSelectedFilter(
-                selectedFilter === "permission" ? null : "permission",
-              )
-            }
-            className={`glass-card rounded-2xl p-4 hover:shadow-lg transition-all ${currentSession && students.length > 0 ? "cursor-pointer" : "cursor-default"} ${selectedFilter === "permission" ? "ring-2 ring-blue-500/30 bg-blue-500/5" : ""}`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center">
-                <Shield className="w-5 h-5 text-blue-500" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-foreground">
-                  {permissionCount}
-                </div>
-                <div className="text-xs text-muted-foreground">Permission</div>
-              </div>
-            </div>
-          </button>
-          <button
-            onClick={() =>
-              currentSession &&
-              students.length > 0 &&
-              setSelectedFilter(selectedFilter === "all" ? null : "all")
-            }
-            className={`glass-card rounded-2xl p-4 hover:shadow-lg transition-all ${currentSession && students.length > 0 ? "cursor-pointer" : "cursor-default"} ${selectedFilter === "all" ? "ring-2 ring-purple-500/30 bg-purple-500/5" : ""}`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center">
-                <Users className="w-5 h-5 text-purple-500" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-foreground">
-                  {students.length}
-                </div>
-                <div className="text-xs text-muted-foreground">Total</div>
-              </div>
-            </div>
-          </button>
-        </div>
-
-        {/* Error/Success Messages */}
-        {error && (
-          <div className="p-4 rounded-xl bg-destructive/10 border border-destructive/30">
-            <p className="text-sm text-destructive">{error}</p>
+        {error ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
           </div>
-        )}
-        {success && (
-          <div className="p-4 rounded-xl bg-accent/10 border border-accent/30">
-            <p className="text-sm text-accent">{success}</p>
-          </div>
-        )}
+        ) : null}
 
-        {/* Progress Steps */}
-        <div className="glass-card rounded-2xl p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-lg font-semibold text-foreground">
-              Attendance Setup Process
-            </h2>
-            <button
-              onClick={handleResetSteps}
-              className="px-4 py-2 rounded-xl bg-orange-500 text-white hover:bg-orange-600 transition-colors text-sm flex items-center gap-2"
-            >
-              <RefreshCw className="w-4 h-4" /> Reset Steps
-            </button>
+        {success ? (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700">
+            {success}
           </div>
+        ) : null}
 
-          <div className="flex items-center justify-between gap-2 mb-6">
-            {[1, 2, 3, 4, 5, 6].map((step) => (
-              <div key={step} className="flex items-center flex-1">
-                <div
-                  className={`flex items-center justify-center w-10 h-10 rounded-full text-sm font-medium transition-all ${
-                    currentStep >= step
-                      ? "gradient-accent text-white shadow-lg"
-                      : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {currentStep > step ? (
-                    <CheckCircle className="w-5 h-5" />
+        {loading ? (
+          <div className="glass-card rounded-2xl border border-border/50 p-12 text-center">
+            <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">
+              Loading attendance data from the database...
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="glass-card rounded-2xl border border-border/50 p-6">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    Department
+                  </label>
+                  <select
+                    value={selectedDepartmentId}
+                    onChange={(event) => setSelectedDepartmentId(event.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="">Select Department</option>
+                    {departments.map((department) => (
+                      <option key={department.id} value={department.id}>
+                        {department.code} - {department.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    Batch
+                  </label>
+                  <select
+                    value={selectedBatchId}
+                    onChange={(event) => setSelectedBatchId(event.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    disabled={!selectedDepartmentId}
+                  >
+                    <option value="">Select Batch</option>
+                    {batches.map((batch) => (
+                      <option key={batch.id} value={batch.id}>
+                        {batch.name} • Sem {batch.semester}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    Subject
+                  </label>
+                  <select
+                    value={selectedSubject}
+                    onChange={(event) => setSelectedSubject(event.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="">Select Subject</option>
+                    {subjects.map((subject) => (
+                      <option key={subject.id} value={subject.name}>
+                        {subject.name} ({subject.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    Topic
+                  </label>
+                  <Input
+                    value={topic}
+                    onChange={(event) => setTopic(event.target.value)}
+                    placeholder="Optional topic"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    Session Date
+                  </label>
+                  <Input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(event) => setSelectedDate(event.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Button onClick={handleStartSession} disabled={!selectedBatchId}>
+                  <Clock3 className="mr-2 h-4 w-4" />
+                  Start Session
+                </Button>
+                <div className="rounded-xl bg-secondary px-3 py-2 text-sm text-muted-foreground">
+                  {selectedBatch
+                    ? `${selectedBatch.name} • ${selectedBatch.department_code} • ${selectedBatch.academic_year}`
+                    : "Select a batch to load students and sessions"}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="glass-card rounded-2xl border border-border/50 p-5">
+                <div className="mb-4 flex items-center gap-2">
+                  <CalendarDays className="h-5 w-5 text-primary" />
+                  <h2 className="text-lg font-semibold text-foreground">
+                    Saved Sessions
+                  </h2>
+                </div>
+                {sessions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No attendance sessions found for the selected filters.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {sessions.map((session) => (
+                      <button
+                        key={session.id}
+                        type="button"
+                        onClick={() => void loadSessionRecords(session)}
+                        className={`w-full rounded-2xl border p-4 text-left transition-colors ${
+                          currentSession?.id === session.id
+                            ? "border-primary bg-primary/5"
+                            : "border-border/50 bg-background/60 hover:bg-background"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-foreground">{session.subject}</p>
+                          <span
+                            className={`rounded-full px-2 py-1 text-[11px] ${
+                              session.is_active
+                                ? "bg-emerald-500/10 text-emerald-600"
+                                : "bg-secondary text-muted-foreground"
+                            }`}
+                          >
+                            {session.is_active ? "Active" : "Closed"}
+                          </span>
+                        </div>
+                        {session.topic ? (
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            Topic: {session.topic}
+                          </p>
+                        ) : null}
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {session.session_date} • {session.start_time}
+                          {session.end_time ? ` - ${session.end_time}` : ""}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+                  {[
+                    {
+                      label: "Present",
+                      value: counts.present,
+                      icon: CheckCircle2,
+                      color: "text-emerald-600",
+                    },
+                    {
+                      label: "Absent",
+                      value: counts.absent,
+                      icon: XCircle,
+                      color: "text-rose-600",
+                    },
+                    {
+                      label: "Late",
+                      value: counts.late,
+                      icon: Clock3,
+                      color: "text-amber-600",
+                    },
+                    {
+                      label: "Excused",
+                      value: counts.excused,
+                      icon: Shield,
+                      color: "text-blue-600",
+                    },
+                  ].map((card) => (
+                    <div
+                      key={card.label}
+                      className="glass-card rounded-2xl border border-border/50 p-5"
+                    >
+                      <div className={`mb-3 ${card.color}`}>
+                        <card.icon className="h-5 w-5" />
+                      </div>
+                      <p className="text-xs text-muted-foreground">{card.label}</p>
+                      <p className="mt-1 text-2xl font-heading font-bold text-foreground">
+                        {card.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="glass-card rounded-2xl border border-border/50 p-6">
+                  <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold text-foreground">
+                        {currentSession
+                          ? `${currentSession.subject} Attendance`
+                          : "Student Attendance"}
+                      </h2>
+                      <p className="text-sm text-muted-foreground">
+                        {currentSession
+                          ? currentSessionClosed
+                            ? "This session is closed and shown in read-only mode."
+                            : "Click a student row to cycle their attendance status."
+                          : "Select or start a session to mark attendance."}
+                      </p>
+                    </div>
+                    <Button
+                      onClick={handleSaveAttendance}
+                      disabled={!currentSession || currentSessionClosed || saving}
+                    >
+                      {saving ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="mr-2 h-4 w-4" />
+                      )}
+                      Save Attendance
+                    </Button>
+                  </div>
+
+                  {loadingStudents ? (
+                    <div className="py-10 text-center">
+                      <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
+                      <p className="text-sm text-muted-foreground">
+                        Loading students...
+                      </p>
+                    </div>
+                  ) : students.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-border p-10 text-center">
+                      <Users className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+                      <p className="text-sm text-muted-foreground">
+                        No students are mapped to this batch in the database yet.
+                      </p>
+                    </div>
                   ) : (
-                    step
+                    <div className="space-y-3">
+                      {students.map((student) => {
+                        const studentId = student.student_id ?? student.id;
+                        const status = attendance[studentId] ?? "present";
+
+                        return (
+                          <button
+                            key={studentId}
+                            type="button"
+                            onClick={() => handleToggleAttendance(studentId)}
+                            disabled={!currentSession || currentSessionClosed}
+                            className="flex w-full items-center justify-between rounded-2xl border border-border/50 bg-background/60 p-4 text-left transition-colors hover:bg-background disabled:cursor-default disabled:hover:bg-background/60"
+                          >
+                            <div>
+                              <p className="font-medium text-foreground">
+                                {student.full_name}
+                              </p>
+                              <p className="text-sm text-muted-foreground">
+                                {student.roll_number || student.email}
+                              </p>
+                            </div>
+                            <span
+                              className={`rounded-full border px-3 py-1 text-xs font-medium capitalize ${getStatusBadgeClassName(
+                                status,
+                              )}`}
+                            >
+                              {status}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
-                {step < 6 && (
-                  <div
-                    className={`flex-1 h-2 mx-3 rounded-full transition-all ${currentStep > step ? "bg-gradient-to-r from-accent to-primary" : "bg-secondary"}`}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-6 gap-2 text-center">
-            {[
-              { step: 1, title: "Department", desc: "Select department" },
-              { step: 2, title: "Year", desc: "Choose year" },
-              { step: 3, title: "Section", desc: "Pick section" },
-              { step: 4, title: "Subject", desc: "Select subject" },
-              { step: 5, title: "Topic & Date", desc: "Enter details" },
-              { step: 6, title: "Attendance", desc: "Mark students" },
-            ].map((item) => (
-              <div
-                key={item.step}
-                className={`transition-all ${currentStep >= item.step ? "opacity-100" : "opacity-50"}`}
-              >
-                <h3 className="font-medium text-foreground text-sm">
-                  {item.title}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {item.desc}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Selection Form */}
-        <div className="glass-card rounded-2xl p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-8 h-8 rounded-lg gradient-accent flex items-center justify-center text-white text-sm font-bold">
-              {currentStep}
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold text-foreground">
-                {getStepTitle(currentStep)}
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                Complete this step to continue
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {/* Department Selection */}
-            <div
-              className={`space-y-3 transition-all duration-300 ${currentStep === 1 ? "ring-2 ring-primary/20 rounded-xl p-4 bg-primary/5" : currentStep > 1 ? "opacity-100" : "opacity-50 pointer-events-none"}`}
-            >
-              <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <Users className="w-4 h-4" /> Department
-                {selectedDepartment && (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                )}
-              </label>
-              <select
-                value={selectedDepartment?.id || ""}
-                onChange={(e) => {
-                  const dept = departments.find(
-                    (d) => d.id === parseInt(e.target.value),
-                  );
-                  setSelectedDepartment(dept || null);
-                  setSelectedYearLevel("");
-                  setSelectedSection("");
-                  setSelectedBatch(null);
-                  setStudents([]);
-                }}
-                disabled={loadingDepartments || currentStep !== 1}
-                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 transition-all"
-              >
-                <option value="">Choose Department</option>
-                {departments.map((dept) => (
-                  <option key={dept.id} value={dept.id}>
-                    {dept.code} - {dept.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Year Selection */}
-            <div
-              className={`space-y-3 transition-all duration-300 ${currentStep === 2 ? "ring-2 ring-primary/20 rounded-xl p-4 bg-primary/5" : currentStep > 2 ? "opacity-100" : "opacity-50 pointer-events-none"}`}
-            >
-              <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <Calendar className="w-4 h-4" /> Academic Year
-                {selectedYearLevel && (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                )}
-              </label>
-              <select
-                value={selectedYearLevel}
-                onChange={(e) => {
-                  setSelectedYearLevel(e.target.value);
-                  setSelectedSection("");
-                  setSelectedBatch(null);
-                }}
-                disabled={!selectedDepartment || currentStep !== 2}
-                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 transition-all"
-              >
-                <option value="">Choose Year Level</option>
-                {YEARS.map((year) => (
-                  <option key={year} value={year}>
-                    {year}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Section Selection */}
-            <div
-              className={`space-y-3 transition-all duration-300 ${currentStep === 3 ? "ring-2 ring-primary/20 rounded-xl p-4 bg-primary/5" : currentStep > 3 ? "opacity-100" : "opacity-50 pointer-events-none"}`}
-            >
-              <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <BookOpen className="w-4 h-4" /> Section
-                {selectedSection && (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                )}
-              </label>
-              <select
-                value={selectedSection}
-                onChange={(e) => {
-                  setSelectedSection(e.target.value);
-                  setStudents([]);
-                  setAttendance({});
-                  setAttendanceHistory([]);
-                  setCurrentSession(null);
-                }}
-                disabled={!selectedYearLevel || currentStep !== 3}
-                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 transition-all"
-              >
-                <option value="">Choose Section</option>
-                {SECTIONS.map((section) => (
-                  <option key={section} value={section}>
-                    Section {section}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Subject Selection */}
-            <div
-              className={`space-y-3 transition-all duration-300 ${currentStep === 4 ? "ring-2 ring-primary/20 rounded-xl p-4 bg-primary/5" : currentStep > 4 ? "opacity-100" : "opacity-50 pointer-events-none"}`}
-            >
-              <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <BookOpen className="w-4 h-4" /> Subject
-                {selectedSubject && (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                )}
-              </label>
-              <select
-                value={selectedSubject}
-                onChange={(e) => {
-                  setSelectedSubject(e.target.value);
-                  setCurrentSession(null);
-                }}
-                disabled={!selectedSection || currentStep !== 4}
-                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 transition-all"
-              >
-                <option value="">Choose Subject</option>
-                {subjects.map((subject) => (
-                  <option key={subject.id} value={subject.name}>
-                    {subject.name} ({subject.code})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Topic Selection */}
-            <div
-              className={`space-y-3 transition-all duration-300 ${currentStep === 5 ? "ring-2 ring-primary/20 rounded-xl p-4 bg-primary/5" : currentStep > 5 ? "opacity-100" : "opacity-50 pointer-events-none"}`}
-            >
-              <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <Pencil className="w-4 h-4" /> Topic Name
-                {selectedTopic && (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                )}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={localTopic}
-                  onChange={(e) => setLocalTopic(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && localTopic.trim()) {
-                      setSelectedTopic(localTopic.trim());
-                    }
-                  }}
-                  placeholder="Enter topic name..."
-                  disabled={!selectedSubject || currentStep !== 5}
-                  className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 transition-all"
-                />
-                {currentStep === 5 && (
-                  <button
-                    onClick={() =>
-                      localTopic.trim() && setSelectedTopic(localTopic.trim())
-                    }
-                    disabled={!localTopic.trim()}
-                    className="px-4 py-2 rounded-xl gradient-accent text-white text-sm font-medium hover:shadow-lg transition-all disabled:opacity-50"
-                  >
-                    Confirm
-                  </button>
-                )}
-                {currentStep > 5 && (
-                  <button
-                    onClick={() => setCurrentStep(5)}
-                    className="p-2.5 rounded-xl bg-secondary text-muted-foreground hover:text-foreground transition-colors"
-                    title="Edit Topic"
-                  >
-                    <Pencil className="w-4 h-4" />
-                  </button>
-                )}
               </div>
             </div>
-
-            {/* Date Selection & Start Button */}
-            <div
-              className={`space-y-3 transition-all duration-300 ${currentStep === 5 && selectedTopic ? "ring-2 ring-primary/20 rounded-xl p-4 bg-primary/5" : currentStep > 5 ? "opacity-100" : "hidden"}`}
-            >
-              <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <Calendar className="w-4 h-4" /> Date
-                {selectedDate && (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                )}
-              </label>
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-4 h-4 text-muted-foreground" />
-                <input
-                  type="date"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  disabled={currentStep !== 5}
-                  className="w-full rounded-xl border border-border bg-background pl-11 pr-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 transition-all"
-                />
-              </div>
-            </div>
-          </div>
-
-          {currentStep === 5 && selectedTopic && (
-            <div className="mt-6 pt-6 border-t border-border/50 flex justify-center">
-              <button
-                onClick={() => handleStartSession(selectedDate)}
-                disabled={!selectedDate || loading}
-                className="w-full md:w-auto min-w-[240px] px-8 py-4 rounded-2xl gradient-accent text-white font-bold hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-3 text-lg"
-              >
-                {loading ? (
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                ) : (
-                  <Clock className="w-6 h-6" />
-                )}
-                Start {selectedSubject} Attendance
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Today's Sessions */}
-        {sessions.length > 0 && (
-          <div className="glass-card rounded-2xl p-4">
-            <h3 className="font-medium text-foreground mb-3 flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 text-accent" /> Today's Sessions
-            </h3>
-            <div className="space-y-2">
-              {sessions.map((session) => (
-                <div
-                  key={session.id}
-                  onClick={() => handleViewSession(session)}
-                  className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer hover:shadow-md ${currentSession?.id === session.id ? "bg-accent/10 border-accent" : "bg-secondary/30 border-transparent hover:bg-secondary/50"}`}
-                >
-                  <div>
-                    <p className="font-medium text-foreground">
-                      {session.subject}
-                    </p>
-                    {session.topic && (
-                      <p className="text-xs text-accent font-medium mb-1">
-                        Topic: {session.topic}
-                      </p>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      {session.start_time}{" "}
-                      {session.end_time ? `- ${session.end_time}` : ""}
-                    </p>
-                  </div>
-                  <span
-                    className={`px-2 py-1 rounded-lg text-xs font-medium ${session.is_active ? "bg-accent/20 text-accent" : "bg-muted text-muted-foreground"}`}
-                  >
-                    {session.is_active ? "Active" : "Closed"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Attendance List */}
-        {currentSession && students.length > 0 && (
-          <div className="glass-card rounded-2xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-lg font-medium text-foreground flex items-center gap-2">
-                  <Users className="w-5 h-5" />
-                  {viewingPastSession
-                    ? `Past Record - ${currentSession.subject}`
-                    : showSummary
-                      ? "Summary"
-                      : `Mark Attendance - ${selectedSubject}`}
-                </h3>
-              </div>
-              <div className="flex items-center gap-4 text-sm">
-                <span className="flex items-center gap-1">
-                  <CheckCircle className="w-4 h-4 text-green-500" />{" "}
-                  {presentCount} P
-                </span>
-                <span className="flex items-center gap-1">
-                  <XCircle className="w-4 h-4 text-red-500" /> {absentCount} A
-                </span>
-                <span className="flex items-center gap-1">
-                  <Clock className="w-4 h-4 text-yellow-500" /> {lateCount} L
-                </span>
-                <span className="flex items-center gap-1">
-                  <Shield className="w-4 h-4 text-blue-500" /> {permissionCount}{" "}
-                  Per
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-2 max-h-[400px] overflow-y-auto">
-              {students
-                .filter(
-                  (student) =>
-                    !selectedFilter ||
-                    selectedFilter === "all" ||
-                    attendance[student.id] === selectedFilter,
-                )
-                .map((student) => (
-                  <div
-                    key={student.id}
-                    onClick={() =>
-                      !showSummary &&
-                      !viewingPastSession &&
-                      handleToggleAttendance(student.id)
-                    }
-                    className={`flex items-center justify-between p-3 rounded-xl border transition-all ${!showSummary && !viewingPastSession ? "cursor-pointer hover:scale-[1.01]" : "cursor-default"} ${getStatusBg(attendance[student.id] || "present")}`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center font-medium text-primary">
-                        {student.full_name?.charAt(0).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className="font-medium text-foreground">
-                          {student.full_name}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {student.roll_number || student.email}
-                        </p>
-                      </div>
-                    </div>
-                    <span
-                      className={`text-sm font-medium ${getStatusColor(attendance[student.id] || "present")}`}
-                    >
-                      {(attendance[student.id] || "present")
-                        .charAt(0)
-                        .toUpperCase() +
-                        (attendance[student.id] || "present").slice(1)}
-                    </span>
-                  </div>
-                ))}
-            </div>
-
-            {!showSummary && !viewingPastSession && (
-              <div className="mt-6 flex justify-between items-center">
-                <button
-                  onClick={handleUndoLastChange}
-                  disabled={attendanceHistory.length === 0}
-                  className="px-4 py-2 rounded-xl border border-orange-500/70 text-orange-600 hover:bg-orange-50 transition-colors text-sm flex items-center gap-2 disabled:opacity-50"
-                >
-                  <RefreshCw className="w-4 h-4" /> Undo
-                </button>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setAttendanceHistory((prev) => [
-                        ...prev,
-                        { ...attendance },
-                      ]);
-                      const newAttendance: Record<number, string> = {};
-                      students.forEach(
-                        (s) => (newAttendance[s.id] = "present"),
-                      );
-                      setAttendance(newAttendance);
-                    }}
-                    className="px-4 py-2 rounded-xl border border-border/70 text-foreground hover:bg-secondary transition-colors text-sm flex items-center gap-2"
-                  >
-                    <RefreshCw className="w-4 h-4" /> Reset All
-                  </button>
-                  <button
-                    onClick={handleSaveAttendance}
-                    disabled={saving}
-                    className="px-6 py-2 rounded-xl gradient-accent text-white font-medium flex items-center gap-2 hover:opacity-90 transition-all disabled:opacity-50"
-                  >
-                    {saving ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Save className="w-4 h-4" />
-                    )}
-                    Save Attendance
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {loadingStudents && (
-          <div className="glass-card rounded-2xl p-8 text-center">
-            <Loader2 className="w-8 h-8 mx-auto animate-spin text-primary mb-2" />
-            <p className="text-sm text-muted-foreground">Loading students...</p>
-          </div>
-        )}
-
-        {showSuccessPopup && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.8, y: 50 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.8, y: 50 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-            onClick={() => setShowSuccessPopup(false)}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <CheckCircle className="w-8 h-8 text-green-600" />
-              </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">Success!</h3>
-              <p className="text-gray-600 mb-6">
-                Attendance for {selectedSubject} has been saved.
-              </p>
-              <button
-                onClick={() => setShowSuccessPopup(false)}
-                className="w-full px-6 py-2 bg-green-600 text-white rounded-xl font-medium hover:bg-green-700 transition-colors"
-              >
-                OK
-              </button>
-            </motion.div>
-          </motion.div>
+          </>
         )}
       </div>
     </FacultyLayout>

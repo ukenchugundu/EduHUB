@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "EduHub - Full Stack Application",
   "scripts": {
-    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev": "node scripts/start-dev.js",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev",
     "install:all": "cd frontend && npm install && cd ../backend && npm install",
