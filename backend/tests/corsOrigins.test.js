@@ -37,7 +37,7 @@ describe("buildAllowedOrigins", () => {
 });
 
 describe("isAllowedOrigin", () => {
-  test("allows configured origins and vercel preview deployments", () => {
+  test("allows configured origins and supported deployment preview domains", () => {
     const origins = buildAllowedOrigins(
       "https://frontend.example.com",
       "https://admin.example.com",
@@ -46,6 +46,9 @@ describe("isAllowedOrigin", () => {
     expect(isAllowedOrigin("https://frontend.example.com", origins)).toBe(true);
     expect(
       isAllowedOrigin("https://eduhub-git-main-preview.vercel.app", origins),
+    ).toBe(true);
+    expect(
+      isAllowedOrigin("https://eduhub-learning-platform.onrender.com", origins),
     ).toBe(true);
   });
 

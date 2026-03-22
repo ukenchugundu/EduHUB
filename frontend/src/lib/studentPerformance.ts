@@ -295,7 +295,7 @@ export const fetchStudentPerformanceData =
           },
         ),
         apiRequestJson<unknown[]>(
-          `${API_BASE}/api/quizzes/student/results`,
+          `${API_BASE}/api/student/results`,
           {
             headers: buildHeaders(true),
           },
@@ -307,7 +307,7 @@ export const fetchStudentPerformanceData =
           },
         ),
         apiRequestJson<unknown[]>(
-          `${API_BASE}/api/quizzes/student/assignments/results`,
+          `${API_BASE}/api/student/assignments/results`,
           {
             headers: buildHeaders(true),
           },

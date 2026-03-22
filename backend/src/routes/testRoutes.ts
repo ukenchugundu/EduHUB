@@ -287,6 +287,30 @@ export const createTestRoutes = (db: Pool) => {
     }
   });
 
+  // Keep fixed GET routes above "/:testId" so they are not treated as ids.
+  router.get("/my-attempts", async (req: any, res) => {
+    try {
+      const studentId = await resolvePortalStudentId(req.user?.userId);
+      if (!studentId) {
+        return res.status(401).json({ error: "Invalid authenticated student." });
+      }
+
+      const attemptsResult = await db.query(
+        `SELECT ta.*, ct.title as test_title, ct.duration_minutes
+         FROM test_attempts ta
+         JOIN coding_tests ct ON ta.test_id = ct.id
+         WHERE ta.student_id = $1
+         ORDER BY ta.start_time DESC`,
+        [studentId],
+      );
+
+      res.json(attemptsResult.rows);
+    } catch (error) {
+      console.error("Error fetching test attempts:", error);
+      res.status(500).json({ error: "Failed to fetch test attempts" });
+    }
+  });
+
   // Get test details with questions
   router.get("/:testId", async (req: any, res) => {
     try {
@@ -350,30 +374,6 @@ int main() {
     };
     return starterCodes[language.toLowerCase()] || starterCodes.python;
   };
-
-  // Get student's test attempts
-  router.get("/my-attempts", async (req: any, res) => {
-    try {
-      const studentId = await resolvePortalStudentId(req.user?.userId);
-      if (!studentId) {
-        return res.status(401).json({ error: "Invalid authenticated student." });
-      }
-
-      const attemptsResult = await db.query(
-        `SELECT ta.*, ct.title as test_title, ct.duration_minutes
-         FROM test_attempts ta
-         JOIN coding_tests ct ON ta.test_id = ct.id
-         WHERE ta.student_id = $1
-         ORDER BY ta.start_time DESC`,
-        [studentId],
-      );
-
-      res.json(attemptsResult.rows);
-    } catch (error) {
-      console.error("Error fetching test attempts:", error);
-      res.status(500).json({ error: "Failed to fetch test attempts" });
-    }
-  });
 
   // Run code (test locally without saving)
   router.post("/run-code", async (req: any, res) => {

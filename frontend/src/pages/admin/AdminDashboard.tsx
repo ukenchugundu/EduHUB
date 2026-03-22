@@ -13,6 +13,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { refreshWebsiteData } from "@/lib/appRefresh";
+import { readStoredAuth } from "@/lib/authSession";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
@@ -106,6 +107,7 @@ const fetchBatchAllocations = async (
 };
 
 const saveBatchAllocation = async (allocation: {
+  allocationId?: number | null;
   batchId: number;
   allocationType: "classroom" | "lab";
   location: string;
@@ -152,14 +154,7 @@ const formatDateTime = (value: string): string => {
 };
 
 const getStoredAuthToken = (): string => {
-  try {
-    const raw = localStorage.getItem("EduHub_auth");
-    if (!raw) return "";
-    const parsed = JSON.parse(raw) as { token?: string };
-    return String(parsed.token ?? "").trim();
-  } catch {
-    return "";
-  }
+  return readStoredAuth()?.token?.trim() ?? "";
 };
 
 interface Batch {
@@ -287,14 +282,15 @@ const AdminDashboard = () => {
 
     try {
       await saveBatchAllocation({
+        allocationId: editingAllocationId,
         batchId: allocationFormBatchId,
         allocationType: allocationFormType,
         location: allocationFormLocation.trim(),
         notes: allocationFormNotes.trim() || undefined,
       });
 
-      setAllocationMessage("Allocation saved successfully.");
       resetAllocationForm();
+      setAllocationMessage("Allocation saved successfully.");
       await refetchAllocations();
     } catch (error) {
       setAllocationError(
@@ -312,9 +308,9 @@ const AdminDashboard = () => {
 
     try {
       await deleteBatchAllocation(allocationId);
+      resetAllocationForm();
       setAllocationMessage("Allocation deleted successfully.");
       await refetchAllocations();
-      resetAllocationForm();
     } catch (error) {
       setAllocationError(
         error instanceof Error

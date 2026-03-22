@@ -7,12 +7,38 @@ import {
 } from "../utils/studentPortalAccess";
 
 const UNDEFINED_TABLE_ERROR_CODE = "42P01";
+const OPTIONAL_SCHEMA_ERROR_CODES = new Set(["42P01", "42703"]);
 
 const isUndefinedTableError = (error: unknown): boolean =>
   typeof error === "object" &&
   error !== null &&
   "code" in error &&
   (error as { code?: string }).code === UNDEFINED_TABLE_ERROR_CODE;
+
+const isOptionalSchemaError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  OPTIONAL_SCHEMA_ERROR_CODES.has(String((error as { code?: unknown }).code ?? ""));
+
+const runOptionalQuery = async <T extends Record<string, unknown>>(
+  query: string,
+  params: unknown[] = [],
+): Promise<{ rows: T[]; rowCount: number }> => {
+  try {
+    const result = await pool.query<T>(query, params);
+    return {
+      rows: result.rows,
+      rowCount: result.rowCount ?? result.rows.length,
+    };
+  } catch (error) {
+    if (isOptionalSchemaError(error)) {
+      return { rows: [], rowCount: 0 };
+    }
+
+    throw error;
+  }
+};
 
 const getStudentBatchId = async (userId?: number): Promise<number | null> => {
   return getStudentBatchIdForAuthUser(pool, userId);
@@ -776,7 +802,15 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
     const { batchTableName } = await getAcademicTableNames(pool);
 
     // Get pending quiz results
-    const pendingQuizResult = await pool.query(
+    const pendingQuizResult = await runOptionalQuery<{
+      id: number;
+      quiz_id: number;
+      quiz_title: string;
+      class_name: string;
+      student_id: string;
+      submitted_at: string | Date | null;
+      type: "quiz";
+    }>(
       `SELECT 
         qa.attempt_id as id,
         qa.quiz_id,
@@ -794,7 +828,15 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
     );
 
     // Get pending assignment submissions
-    const pendingAssignmentResult = await pool.query(
+    const pendingAssignmentResult = await runOptionalQuery<{
+      id: number;
+      reference_id: number;
+      title: string;
+      class_name: string;
+      student_id: string;
+      submitted_at: string | Date | null;
+      type: "assignment";
+    }>(
       `SELECT 
         asub.submission_id as id,
         asub.assignment_id as reference_id,
@@ -811,9 +853,17 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
       LIMIT 50`,
     );
 
-    const pendingTestResult = await pool.query(
+    const pendingTestResult = await runOptionalQuery<{
+      id: number;
+      reference_id: number;
+      title: string;
+      class_name: string;
+      student_id: string;
+      submitted_at: string | Date | null;
+      type: "test";
+    }>(
       `SELECT
-        ta.attempt_id as id,
+        ta.id as id,
         ta.test_id as reference_id,
         ct.title,
         COALESCE(b.name, '') as class_name,
@@ -837,7 +887,6 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
         class_name: row.class_name,
         student_id: row.student_id,
         type: row.type,
-        ...row,
         submitted_at: row.submitted_at
           ? new Date(row.submitted_at).toISOString()
           : null,

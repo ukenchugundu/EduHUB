@@ -8,8 +8,10 @@ const normalizeOrigin = (value: string | undefined): string => {
     return new URL(rawValue).origin;
   } catch {
     return rawValue.replace(/\/+$/, "");
-  }
-};
+    }
+  };
+
+const TRUSTED_DEPLOYMENT_SUFFIXES = [".vercel.app", ".onrender.com"];
 
 export const buildAllowedOrigins = (
   frontendBaseUrl: string | undefined,
@@ -51,6 +53,8 @@ export const isAllowedOrigin = (
 
   return (
     allowedOrigins.includes(normalizedOrigin) ||
-    normalizedOrigin.endsWith(".vercel.app")
+    TRUSTED_DEPLOYMENT_SUFFIXES.some((suffix) =>
+      normalizedOrigin.endsWith(suffix),
+    )
   );
 };

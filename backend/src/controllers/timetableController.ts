@@ -44,6 +44,82 @@ const getStudentBatchId = async (userId?: number): Promise<number | null> => {
   return getStudentBatchIdForAuthUser(pool, userId);
 };
 
+let timetableTablesReadyPromise: Promise<void> | null = null;
+
+const ensureTimetableTables = async (): Promise<void> => {
+  if (!timetableTablesReadyPromise) {
+    timetableTablesReadyPromise = (async () => {
+      const { batchTableName } = await getAcademicTableNames(pool);
+      const batchReferenceClause = batchTableName
+        ? ` REFERENCES ${batchTableName}(id) ON DELETE CASCADE`
+        : "";
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS timetable_entries (
+          id SERIAL PRIMARY KEY,
+          batch_id INTEGER NOT NULL${batchReferenceClause},
+          faculty_id INTEGER REFERENCES auth_users(auth_user_id) ON DELETE SET NULL,
+          subject VARCHAR(255) NOT NULL,
+          topic TEXT,
+          room VARCHAR(255),
+          weekday INTEGER NOT NULL CHECK (weekday BETWEEN 1 AND 7),
+          start_time TIME NOT NULL,
+          end_time TIME NOT NULL,
+          created_by INTEGER REFERENCES auth_users(auth_user_id) ON DELETE SET NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS batch_id INTEGER",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS faculty_id INTEGER",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS subject VARCHAR(255)",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS topic TEXT",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS room VARCHAR(255)",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS weekday INTEGER",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS start_time TIME",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS end_time TIME",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS created_by INTEGER",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+      );
+      await pool.query(
+        "ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+      );
+
+      await pool.query(
+        "CREATE INDEX IF NOT EXISTS idx_timetable_entries_batch_weekday ON timetable_entries (batch_id, weekday, start_time)",
+      );
+      await pool.query(
+        "CREATE INDEX IF NOT EXISTS idx_timetable_entries_faculty_weekday ON timetable_entries (faculty_id, weekday, start_time)",
+      );
+    })().catch((error) => {
+      timetableTablesReadyPromise = null;
+      throw error;
+    });
+  }
+
+  await timetableTablesReadyPromise;
+};
+
 const toLocalDateString = (date: Date): string => {
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return localDate.toISOString().split("T")[0];
@@ -143,6 +219,7 @@ const getTimetableSelect = async (): Promise<string | null> => {
 
 export const getBatchTimetableEntries = async (req: Request, res: Response) => {
   try {
+    await ensureTimetableTables();
     const { role } = (req as any).user ?? {};
     const batchId = Number(req.params.batchId);
     const timetableSelect = await getTimetableSelect();
@@ -174,6 +251,7 @@ export const getBatchTimetableEntries = async (req: Request, res: Response) => {
 
 export const createTimetableEntry = async (req: Request, res: Response) => {
   try {
+    await ensureTimetableTables();
     const { userId, role } = (req as any).user ?? {};
     const { batchId, facultyId, subject, topic, room, weekday, startTime, endTime } = req.body;
     const timetableSelect = await getTimetableSelect();
@@ -343,6 +421,7 @@ const WEEKDAY_KEYWORDS: Record<string, number> = {
 
 export const clearBatchTimetableEntries = async (req: Request, res: Response) => {
   try {
+    await ensureTimetableTables();
     const { role } = (req as any).user ?? {};
     if (role !== "admin") {
       return res.status(403).json({ error: "Only admin can clear timetable entries" });
@@ -367,6 +446,7 @@ export const clearBatchTimetableEntries = async (req: Request, res: Response) =>
 
 export const autoGenerateBatchTimetable = async (req: Request, res: Response) => {
   try {
+    await ensureTimetableTables();
     const { role } = (req as any).user ?? {};
     const timetableSelect = await getTimetableSelect();
     const { batchTableName } = await getAcademicTableNames(pool);
@@ -516,6 +596,7 @@ export const autoGenerateBatchTimetable = async (req: Request, res: Response) =>
 
 export const getFacultyTodayTimetable = async (req: Request, res: Response) => {
   try {
+    await ensureTimetableTables();
     const { userId, role } = (req as any).user ?? {};
     const timetableSelect = await getTimetableSelect();
     if (role !== "faculty" && role !== "admin") {
@@ -554,6 +635,7 @@ export const getFacultyTodayTimetable = async (req: Request, res: Response) => {
 
 export const getFacultyNextTimetableClass = async (req: Request, res: Response) => {
   try {
+    await ensureTimetableTables();
     const { userId, role } = (req as any).user ?? {};
     const timetableSelect = await getTimetableSelect();
     if (role !== "faculty" && role !== "admin") {
@@ -617,6 +699,7 @@ export const getFacultyNextTimetableClass = async (req: Request, res: Response) 
 
 export const getStudentTimetableSchedule = async (req: Request, res: Response) => {
   try {
+    await ensureTimetableTables();
     const { userId } = (req as any).user ?? {};
     const now = new Date();
     const todayWeekday = getIsoWeekday(now);

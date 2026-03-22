@@ -16,6 +16,11 @@ import {
   getFacultyClassAllocationsForCurrentUser,
   getCurrentUserProfile,
 } from "../controllers/authController";
+import {
+  deleteBatchAllocation,
+  getBatchAllocations,
+  saveBatchAllocation,
+} from "../controllers/batchAllocationController";
 import { authenticateToken } from "../middlewares/auth";
 
 const router = Router();
@@ -33,6 +38,13 @@ router.put("/admin/members/:memberId", updateAdminMember);
 router.delete("/admin/members/:memberId", deleteAdminMember);
 router.get("/admin/dashboard", getAdminDashboardData);
 router.get("/admin/class-options", getAdminClassOptions);
+router.get("/admin/batch-allocations", authenticateToken, getBatchAllocations);
+router.post("/admin/batch-allocations", authenticateToken, saveBatchAllocation);
+router.delete(
+  "/admin/batch-allocations/:allocationId",
+  authenticateToken,
+  deleteBatchAllocation,
+);
 router.put(
   "/admin/members/:memberId/class-allocations",
   updateFacultyClassAllocations,
