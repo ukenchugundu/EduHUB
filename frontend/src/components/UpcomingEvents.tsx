@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Calendar, Clock, MapPin, ArrowRight, X, LogIn } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { buildApiUrl } from "@/lib/apiUrl";
 
 interface EventData {
   id?: number;
@@ -105,7 +106,7 @@ const UpcomingEvents = () => {
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch(`/api/events`, {
+        const response = await fetch(buildApiUrl("/api/events"), {
           signal: controller.signal,
         });
         if (!response.ok) {

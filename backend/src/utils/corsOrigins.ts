@@ -1,26 +1,56 @@
+const normalizeOrigin = (value: string | undefined): string => {
+  const rawValue = String(value ?? "").trim();
+  if (!rawValue) {
+    return "";
+  }
+
+  try {
+    return new URL(rawValue).origin;
+  } catch {
+    return rawValue.replace(/\/+$/, "");
+  }
+};
+
 export const buildAllowedOrigins = (
   frontendBaseUrl: string | undefined,
   corsAllowedOriginsRaw: string | undefined,
 ): string[] => {
-  const normalizedFrontendBaseUrl = (frontendBaseUrl || "")
-    .trim()
-    .replace(/\/$/, "");
   const configuredCorsOrigins = (corsAllowedOriginsRaw || "")
     .split(",")
-    .map((value) => value.trim().replace(/\/$/, ""))
+    .map((value) => normalizeOrigin(value))
     .filter(Boolean);
 
   return Array.from(
     new Set(
       [
+        "http://localhost:3000",
+        "http://localhost:5173",
         "http://localhost:8080",
         "http://localhost:8081",
         "http://localhost:8082",
-        "https://eduhub-frontend.vercel.app",
-        "https://ukenchugundu-project-svce.vercel.app",
-        normalizedFrontendBaseUrl,
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:8081",
+        "http://127.0.0.1:8082",
+        normalizeOrigin(frontendBaseUrl),
         ...configuredCorsOrigins,
       ].filter(Boolean),
     ),
+  );
+};
+
+export const isAllowedOrigin = (
+  origin: string,
+  allowedOrigins: string[],
+): boolean => {
+  const normalizedOrigin = normalizeOrigin(origin);
+  if (!normalizedOrigin) {
+    return false;
+  }
+
+  return (
+    allowedOrigins.includes(normalizedOrigin) ||
+    normalizedOrigin.endsWith(".vercel.app")
   );
 };

@@ -14,10 +14,11 @@ import { createTestRoutes } from "./routes/testRoutes";
 import { createFacultyTestRoutes } from "./routes/facultyTestRoutes";
 import studentTestRoutes from "./routes/studentTestRoutes";
 import { authenticateToken } from "./middlewares/auth";
-import { buildAllowedOrigins } from "./utils/corsOrigins";
+import { buildAllowedOrigins, isAllowedOrigin } from "./utils/corsOrigins";
 
 const app: Express = express();
 const defaultPort = Number(process.env.PORT) || 3000;
+app.set("trust proxy", 1);
 
 // Use real database connection
 let db: Pool | null = pool;
@@ -38,22 +39,19 @@ const corsOptions: cors.CorsOptions = {
     if (!origin) {
       return callback(null, true);
     }
-    // Also allow any vercel.app domain for preview deployments
-    if (origin.endsWith(".vercel.app")) {
+
+    if (isAllowedOrigin(origin, allowedOrigins)) {
       return callback(null, true);
     }
 
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow all for now
-    }
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    return callback(null, false);
   },
   credentials: true,
 };
 
 app.use(cors(corsOptions));
-console.log("[CORS] Configured with allowed origins:", corsOptions.origin);
+console.log("[CORS] Configured with allowed origins:", allowedOrigins);
 
 // Log all requests
 app.use((req, res, next) => {

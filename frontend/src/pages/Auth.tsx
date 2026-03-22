@@ -48,7 +48,6 @@ const roleConfig: Record<
   },
 };
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const STUDENT_ID_STORAGE_KEY = "eduhub_student_id";
 const demoCredentialsByRole: Record<
   Role,
@@ -107,7 +106,7 @@ const postJson = async <T,>(
   payload: Record<string, unknown>,
 ): Promise<T> => {
   return apiRequestJson<T>(
-    `${API_BASE}${path}`,
+    `/api${path}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

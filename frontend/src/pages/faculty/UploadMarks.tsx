@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useForm, SubmitHandler } from "react-hook-form";
 import FacultyLayout from "@/components/FacultyLayout";
+import { buildApiUrl } from "@/lib/apiUrl";
 import {
   FileSpreadsheet,
   Upload,
@@ -116,10 +117,13 @@ const FacultyUploadMarks: React.FC = () => {
     formData.append("maxMarks", selectedExam.maxMarks.toString());
 
     try {
-      const response = await fetch("/api/faculty/upload-internal-marks", {
-        method: "POST",
-        body: formData,
-      });
+      const response = await fetch(
+        buildApiUrl("/api/faculty/upload-internal-marks"),
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
 
       if (!response.ok) {
         const errorData = await response.json();

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useForm, SubmitHandler } from "react-hook-form";
+import { buildApiUrl } from "@/lib/apiUrl";
 
 interface IFormInput {
   file: FileList;
@@ -27,7 +28,7 @@ const UploadMarks: React.FC = () => {
     formData.append("file", file);
 
     try {
-      const response = await fetch("/api/faculty/upload-marks", {
+      const response = await fetch(buildApiUrl("/api/faculty/upload-marks"), {
         method: "POST",
         body: formData,
       });

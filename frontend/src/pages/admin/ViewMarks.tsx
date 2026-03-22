@@ -10,6 +10,7 @@ import {
   Search,
 } from "lucide-react";
 import AdminLayout from "@/components/AdminLayout";
+import { buildApiUrl } from "@/lib/apiUrl";
 
 interface Test {
   id: number;
@@ -49,7 +50,7 @@ const ViewMarks: React.FC = () => {
     const fetchTests = async () => {
       try {
         setError("");
-        const response = await fetch("/api/faculty/tests/marks");
+        const response = await fetch(buildApiUrl("/api/faculty/tests/marks"));
         if (!response.ok) {
           throw new Error("Failed to fetch tests.");
         }

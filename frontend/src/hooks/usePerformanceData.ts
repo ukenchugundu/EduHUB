@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { debounce } from "lodash";
+import { buildApiUrl } from "@/lib/apiUrl";
 
 interface Student {
   student_id: string;
@@ -83,7 +84,9 @@ export const usePerformanceData = ({
           ...(search && { search }),
         });
 
-        const response = await fetch(`/api/students/performance?${params}`);
+        const response = await fetch(
+          buildApiUrl(`/api/students/performance?${params}`),
+        );
 
         if (!response.ok) {
           throw new Error("Failed to fetch student data");

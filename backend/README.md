@@ -27,6 +27,16 @@ Important backend env vars:
 
 Use `backend/.env.example` as the reference list.
 
+## Frontend Deployment
+
+Set `VITE_API_URL` in Vercel to the backend origin only.
+
+- Correct: `https://your-render-service.onrender.com`
+- Incorrect: `https://your-render-service.onrender.com/api`
+- Incorrect: `https://your-render-service.onrender.com/api/v1`
+
+The frontend now normalizes accidental `/api` or `/api/v1` suffixes, but keeping the env value clean makes the deployment easier to reason about.
+
 ## Email Delivery Modes
 
 The auth service supports 3 email modes via environment variables:

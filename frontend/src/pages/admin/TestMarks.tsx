@@ -9,6 +9,7 @@ import {
   UserRound,
 } from "lucide-react";
 import AdminLayout from "@/components/AdminLayout";
+import { buildApiUrl } from "@/lib/apiUrl";
 
 interface Mark {
   userId: string;
@@ -40,7 +41,9 @@ const TestMarks: React.FC = () => {
 
       try {
         setError("");
-        const response = await fetch(`/api/faculty/marks/${testId}`);
+        const response = await fetch(
+          buildApiUrl(`/api/faculty/marks/${testId}`),
+        );
         if (!response.ok) {
           throw new Error("Failed to fetch marks");
         }

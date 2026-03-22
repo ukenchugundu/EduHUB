@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { useTheme } from "@/contexts/ThemeContext";
+import { buildApiUrl } from "@/lib/apiUrl";
 import UploadMarks from "./UploadMarks";
 import {
   AlertTriangle,
@@ -59,7 +60,9 @@ export const FacultyTestResults: React.FC<{ testId: number }> = ({
   const fetchResults = async () => {
     try {
       console.log(`[Faculty] Fetching results for test ${testId}`);
-      const response = await fetch(`/api/student/test-results/${testId}`);
+      const response = await fetch(
+        buildApiUrl(`/api/student/test-results/${testId}`),
+      );
       if (response.ok) {
         const data = await response.json();
         console.log(
@@ -157,11 +160,14 @@ export const FacultyTestResults: React.FC<{ testId: number }> = ({
 
   const updateScore = async (attemptId: number, score: number) => {
     try {
-      const response = await fetch(`/api/faculty/update-score/${attemptId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ score }),
-      });
+      const response = await fetch(
+        buildApiUrl(`/api/faculty/update-score/${attemptId}`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ score }),
+        },
+      );
 
       if (response.ok) {
         setResults((prev) =>
@@ -182,9 +188,12 @@ export const FacultyTestResults: React.FC<{ testId: number }> = ({
 
   const publishResults = async () => {
     try {
-      const response = await fetch(`/api/faculty/publish-results/${testId}`, {
-        method: "POST",
-      });
+      const response = await fetch(
+        buildApiUrl(`/api/faculty/publish-results/${testId}`),
+        {
+          method: "POST",
+        },
+      );
 
       if (response.ok) {
         alert(

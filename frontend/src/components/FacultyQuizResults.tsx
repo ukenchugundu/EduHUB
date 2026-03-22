@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
+import { buildApiUrl } from "@/lib/apiUrl";
 import {
   CheckCircle,
   XCircle,
@@ -53,7 +54,7 @@ export const FacultyQuizResults: React.FC<{ quizId: number }> = ({
   const updateScore = async (attemptId: number, score: number) => {
     try {
       const response = await fetch(
-        `/api/faculty/update-quiz-score/${attemptId}`,
+        buildApiUrl(`/api/faculty/update-quiz-score/${attemptId}`),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -81,7 +82,7 @@ export const FacultyQuizResults: React.FC<{ quizId: number }> = ({
   const publishResults = async () => {
     try {
       const response = await fetch(
-        `/api/faculty/publish-quiz-results/${quizId}`,
+        buildApiUrl(`/api/faculty/publish-quiz-results/${quizId}`),
         {
           method: "POST",
         },
@@ -116,7 +117,9 @@ export const FacultyQuizResults: React.FC<{ quizId: number }> = ({
   const fetchResults = async () => {
     try {
       console.log(`[Faculty] Fetching quiz results for quiz ${quizId}`);
-      const response = await fetch(`/api/student/quiz-results/${quizId}`);
+      const response = await fetch(
+        buildApiUrl(`/api/student/quiz-results/${quizId}`),
+      );
       if (response.ok) {
         const data = await response.json();
         console.log(

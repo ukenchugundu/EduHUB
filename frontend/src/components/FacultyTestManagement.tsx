@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { buildApiUrl } from "@/lib/apiUrl";
 
 interface Test {
   id: number;
@@ -47,7 +48,7 @@ export const FacultyTestManagement: React.FC = () => {
 
   const fetchTests = async () => {
     try {
-      const response = await fetch("/api/faculty/tests");
+      const response = await fetch(buildApiUrl("/api/faculty/tests"));
       const data = await response.json();
       setTests(data);
     } catch (error) {
@@ -84,7 +85,7 @@ export const FacultyTestManagement: React.FC = () => {
 
   const createTest = async () => {
     try {
-      const response = await fetch("/api/faculty/tests", {
+      const response = await fetch(buildApiUrl("/api/faculty/tests"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newTest),
@@ -108,7 +109,7 @@ export const FacultyTestManagement: React.FC = () => {
 
   const toggleTestStatus = async (testId: number, isActive: boolean) => {
     try {
-      await fetch(`/api/faculty/tests/${testId}/toggle`, {
+      await fetch(buildApiUrl(`/api/faculty/tests/${testId}/toggle`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_active: !isActive }),

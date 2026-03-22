@@ -1,4 +1,5 @@
 import { readStoredAuth } from "@/lib/authSession";
+import { resolveApiUrl } from "@/lib/apiUrl";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_RETRY_COUNT = 1;
@@ -140,6 +141,7 @@ export const requestJson = async <T,>(
     includeAuth = true,
     jsonContentType = false,
   } = config;
+  const resolvedUrl = resolveApiUrl(url);
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const controller = new AbortController();
@@ -161,7 +163,7 @@ export const requestJson = async <T,>(
     }
 
     try {
-      const response = await fetch(url, {
+      const response = await fetch(resolvedUrl, {
         ...init,
         headers: buildHeaders(
           init?.headers,
