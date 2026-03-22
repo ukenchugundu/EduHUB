@@ -218,7 +218,7 @@ const Auth = () => {
 
     try {
       const email = loginEmail.trim().toLowerCase();
-      const auth = await postJson<AuthApiResponse>("/api/auth/login", {
+      const auth = await postJson<AuthApiResponse>("/auth/login", {
         role: selectedRole,
         email,
         password: loginPassword,
@@ -250,7 +250,7 @@ const Auth = () => {
 
     try {
       const response = await postJson<ForgotPasswordResponse>(
-        "/api/auth/forgot-password",
+        "/auth/forgot-password",
         {
           role: selectedRole,
           email: forgotEmail.trim(),
@@ -295,7 +295,7 @@ const Auth = () => {
 
     try {
       const response = await postJson<GenericMessageResponse>(
-        "/api/auth/reset-password",
+        "/auth/reset-password",
         {
           token: resetTokenFromUrl,
           newPassword,
@@ -336,7 +336,7 @@ const Auth = () => {
     setAuthMessage("");
     setIsSubmitting(true);
     try {
-      const auth = await postJson<AuthApiResponse>("/api/auth/register", {
+      const auth = await postJson<AuthApiResponse>("/auth/register", {
         role: "student",
         email: signupEmail.trim(),
         password: signupPassword,
