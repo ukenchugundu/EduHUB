@@ -21,6 +21,7 @@ import {
   getBatchAllocations,
   saveBatchAllocation,
 } from "../controllers/batchAllocationController";
+import { getAdminHistory } from "../controllers/historyController";
 import { authenticateToken } from "../middlewares/auth";
 
 const router = Router();
@@ -38,6 +39,7 @@ router.put("/admin/members/:memberId", updateAdminMember);
 router.delete("/admin/members/:memberId", deleteAdminMember);
 router.get("/admin/dashboard", getAdminDashboardData);
 router.get("/admin/class-options", getAdminClassOptions);
+router.get("/admin/history", authenticateToken, getAdminHistory);
 router.get("/admin/batch-allocations", authenticateToken, getBatchAllocations);
 router.post("/admin/batch-allocations", authenticateToken, saveBatchAllocation);
 router.delete(

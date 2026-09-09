@@ -45,9 +45,9 @@ const requestJson = async <T,>(path: string): Promise<T> => {
     },
     {
       fallbackError: "Failed to load faculty history.",
-      retries: 1,
+      retries: 2,
       timeoutMs: 8000,
-      includeAuth: false,
+      includeAuth: true,
     },
   );
 };
@@ -83,22 +83,23 @@ const FacultyHistory = () => {
       requestJson<TestItem[]>("/api/faculty/tests"),
     ]);
 
-    setAssignments(
+    const loadedAssignments =
       assignmentResult.status === "fulfilled" &&
-        Array.isArray(assignmentResult.value)
+      Array.isArray(assignmentResult.value)
         ? assignmentResult.value
-        : [],
-    );
-    setQuizzes(
+        : [];
+    const loadedQuizzes =
       quizResult.status === "fulfilled" && Array.isArray(quizResult.value)
         ? quizResult.value
-        : [],
-    );
-    setTests(
+        : [];
+    const loadedTests =
       testResult.status === "fulfilled" && Array.isArray(testResult.value)
         ? testResult.value
-        : [],
-    );
+        : [];
+
+    setAssignments(loadedAssignments);
+    setQuizzes(loadedQuizzes);
+    setTests(loadedTests);
 
     const errors = [assignmentResult, quizResult, testResult]
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
@@ -108,13 +109,17 @@ const FacultyHistory = () => {
           : "Failed to load faculty history.",
       );
 
-    setError(
-      errors.length === 0
-        ? ""
-        : errors.length === 3
-          ? errors[0]
-          : "Some items could not be refreshed. Showing available data.",
-    );
+    const totalCount =
+      loadedAssignments.length + loadedQuizzes.length + loadedTests.length;
+
+    if (errors.length === 0) {
+      setError("");
+    } else if (errors.length === 3 && totalCount === 0) {
+      setError(errors[0] || "Failed to load faculty history.");
+    } else {
+      // Data is available or partial sections loaded cleanly
+      setError("");
+    }
     setLoading(false);
   };
 

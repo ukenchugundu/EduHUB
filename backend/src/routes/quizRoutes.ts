@@ -74,6 +74,7 @@ router.post("/assignments", createAssignment);
 router.put("/assignments/:assignmentId", updateAssignment);
 router.delete("/assignments/:assignmentId", deleteAssignment);
 router.post("/assignments/:assignmentId/submissions", submitAssignment);
+router.get("/student/history", getStudentHistory);
 router.get("/student/history/:studentId", getStudentHistory);
 router.get("/student/assignments/submissions", getStudentAssignmentSubmissions);
 router.get("/student/assignments/results", getStudentAssignmentResults);

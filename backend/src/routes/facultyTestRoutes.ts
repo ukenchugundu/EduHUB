@@ -27,21 +27,25 @@ export const createFacultyTestRoutes = (db: Pool) => {
   // Get all tests for faculty
   router.get("/tests", async (req: any, res) => {
     try {
-      const facultyId = req.user?.userId || 1;
+      const facultyId = req.user?.userId || req.user?.id || 1;
+      const userRole = String(req.user?.role || "").toLowerCase();
 
-      const result = await db.query(
-        `SELECT ct.*, 
+      let query = `SELECT ct.*, 
          COUNT(DISTINCT tq.id) as question_count,
          COUNT(DISTINCT ta.id) as attempt_count
          FROM coding_tests ct
          LEFT JOIN test_questions tq ON ct.id = tq.test_id
-         LEFT JOIN test_attempts ta ON ct.id = ta.test_id
-         WHERE ct.faculty_id = $1
-         GROUP BY ct.id
-         ORDER BY ct.created_at DESC`,
-        [facultyId],
-      );
+         LEFT JOIN test_attempts ta ON ct.id = ta.test_id`;
+      const params: any[] = [];
 
+      if (userRole !== "admin") {
+        query += ` WHERE ct.faculty_id = $1 OR ct.faculty_id IS NULL`;
+        params.push(facultyId);
+      }
+
+      query += ` GROUP BY ct.id ORDER BY ct.created_at DESC`;
+
+      const result = await db.query(query, params);
       res.json(result.rows);
     } catch (error) {
       console.error("Error fetching tests:", error);

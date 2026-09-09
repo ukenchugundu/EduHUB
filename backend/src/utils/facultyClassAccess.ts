@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import { Request } from "express";
 import { PoolClient, Pool } from "pg";
+import { verifyAndDecodeJwt } from "../middlewares/auth";
 
 export interface RequestAuthUser {
   userId: number;
@@ -164,37 +165,51 @@ export const buildDerivedClassName = ({
 export const getAuthUserFromRequest = (
   req: Request,
 ): RequestAuthUser | null => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.split(" ")[1];
+  if ((req as any).user) {
+    const user = (req as any).user;
+    const userId = Number(user.userId ?? user.id);
+    const role = String(user.role ?? "").trim();
+    const email = String(user.email ?? "").trim();
+    if (Number.isInteger(userId) && userId > 0 && role) {
+      return {
+        userId,
+        role,
+        email: email || undefined,
+      };
+    }
+  }
+
+  const authHeader =
+    req.headers.authorization ||
+    (req.headers["x-access-token"] as string | undefined);
+  const headerValue = Array.isArray(authHeader) ? authHeader[0] : authHeader;
+  const token =
+    (headerValue && headerValue.startsWith("Bearer ")
+      ? headerValue.split(" ")[1]
+      : headerValue) || (req.query?.token as string | undefined);
+
   if (!token) {
     return null;
   }
 
-  try {
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "fallback-secret",
-    );
-
-    if (typeof decoded !== "object" || decoded === null) {
-      return null;
-    }
-
-    const userId = Number((decoded as { userId?: unknown }).userId);
-    const role = String((decoded as { role?: unknown }).role ?? "").trim();
-    const email = String((decoded as { email?: unknown }).email ?? "").trim();
-    if (!Number.isInteger(userId) || userId <= 0 || !role) {
-      return null;
-    }
-
-    return {
-      userId,
-      role,
-      email: email || undefined,
-    };
-  } catch {
+  const decoded = verifyAndDecodeJwt(token);
+  if (!decoded) {
     return null;
   }
+
+  const userId = Number(decoded.userId ?? decoded.id);
+  const role = String(decoded.role ?? "").trim();
+  const email = String(decoded.email ?? "").trim();
+
+  if (!Number.isInteger(userId) || userId <= 0 || !role) {
+    return null;
+  }
+
+  return {
+    userId,
+    role,
+    email: email || undefined,
+  };
 };
 
 export const ensureFacultyClassAllocationsTable = async (

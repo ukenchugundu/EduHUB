@@ -832,15 +832,15 @@ export const getFacultyPendingGrades = async (req: Request, res: Response) => {
       type: "quiz";
     }>(
       `SELECT 
-        qa.attempt_id as id,
+        COALESCE(qa.id, qa.attempt_id, 1) as id,
         qa.quiz_id,
         q.title as quiz_title,
-        q.cls as class_name,
-        qa.student_id,
+        COALESCE(q.cls, q.subject, '') as class_name,
+        CAST(qa.student_id AS VARCHAR) as student_id,
         qa.submitted_at,
         'quiz' as type
       FROM quiz_attempts qa
-      JOIN quizzes q ON qa.quiz_id = q.id
+      JOIN quizzes q ON qa.quiz_id = q.id OR qa.quiz_id = q.quiz_id
       WHERE qa.submitted_at IS NOT NULL 
         AND qa.faculty_score IS NULL
       ORDER BY qa.submitted_at DESC

@@ -6,6 +6,7 @@ import pool from "../utils/db";
 import {
   facultyHasClassAccess,
   facultyHasClassAccessInMemory,
+  getAuthUserFromRequest,
   getFacultyClassAllocations,
   getInMemoryFacultyClassAllocations,
 } from "../utils/facultyClassAccess";
@@ -197,34 +198,6 @@ const isDatabaseConnectionError = (error: unknown): boolean => {
   );
 };
 
-const getAuthUserFromRequest = (
-  req: Request,
-): { userId: number; role: string } | null => {
-  const authHeader = req.headers["authorization"] as string | undefined;
-  const token = authHeader?.split(" ")[1];
-  if (!token) {
-    return null;
-  }
-
-  try {
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "fallback-secret",
-    );
-
-    if (typeof decoded === "object" && decoded !== null) {
-      const userId = Number((decoded as any).userId);
-      const role = String((decoded as any).role ?? "");
-      if (Number.isInteger(userId) && userId > 0 && role) {
-        return { userId, role };
-      }
-    }
-  } catch {
-    // ignore invalid token
-  }
-
-  return null;
-};
 
 const buildFacultyAllowedClassSet = (
   allocations: Array<{ className: string }>,
