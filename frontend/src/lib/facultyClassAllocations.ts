@@ -1,6 +1,6 @@
 import { readStoredAuth } from "@/lib/authSession";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 export interface FacultyClassAllocationOption {
   className: string;

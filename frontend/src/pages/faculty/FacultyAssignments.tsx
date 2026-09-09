@@ -60,7 +60,7 @@ interface AssignmentSubmission {
   max_score?: number;
 }
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 const buildAuthHeaders = (includeJsonContentType = false): HeadersInit => {
   const token = readStoredAuth()?.token?.trim();

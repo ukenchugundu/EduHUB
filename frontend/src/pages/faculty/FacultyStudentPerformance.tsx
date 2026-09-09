@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { readStoredAuth } from "@/lib/authSession";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 const buildAuthHeaders = (): HeadersInit => {
   const token = readStoredAuth()?.token?.trim();

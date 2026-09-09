@@ -275,7 +275,7 @@ const EduHubAIAgent = ({
     try {
       const auth = readStoredAuth();
       const token = auth?.token;
-      const apiBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+      const apiBase = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
       const res = await fetch(`${apiBase}/api/ai/chat`, {
         method: "POST",

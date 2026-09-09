@@ -950,6 +950,27 @@ const ensureQuizQuestionTables = async (
     )
   `);
 
+  await db.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='questions' AND column_name='question_id') THEN
+        ALTER TABLE questions ADD COLUMN question_id INT GENERATED ALWAYS AS (id) STORED;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='questions' AND column_name='question_text') THEN
+        ALTER TABLE questions ADD COLUMN question_text TEXT GENERATED ALWAYS AS (text) STORED;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='options' AND column_name='option_id') THEN
+        ALTER TABLE options ADD COLUMN option_id INT GENERATED ALWAYS AS (id) STORED;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='options' AND column_name='option_text') THEN
+        ALTER TABLE options ADD COLUMN option_text TEXT GENERATED ALWAYS AS (text) STORED;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='quizzes' AND column_name='quiz_id') THEN
+        ALTER TABLE quizzes ADD COLUMN quiz_id INT GENERATED ALWAYS AS (id) STORED;
+      END IF;
+    END $$;
+  `);
+
   await db.query(
     "ALTER TABLE questions ADD COLUMN IF NOT EXISTS question_type VARCHAR(30)",
   );

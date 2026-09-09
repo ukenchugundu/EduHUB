@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { readStoredAuth } from "@/lib/authSession";
 import { toast } from "sonner";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 interface QuestionSubmission {
   id?: number;

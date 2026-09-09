@@ -44,7 +44,7 @@ const sidebarItems = [
   { label: "History", icon: Clock, path: "/student/history" },
 ];
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 const StudentLayoutShell = ({ children }: { children: React.ReactNode }) => {
   const navigate = useNavigate();

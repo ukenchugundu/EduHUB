@@ -14,7 +14,7 @@ import {
 import { refreshWebsiteData } from "@/lib/appRefresh";
 import { requestJson as apiRequestJson } from "@/lib/apiClient";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 const SETTINGS_STORAGE_KEY = "eduhub_admin_settings_v1";
 
 interface AdminDashboardData {

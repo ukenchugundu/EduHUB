@@ -16,7 +16,7 @@ import CreateTaskModal from "@/components/CreateTaskModal";
 import { requestJson as apiRequestJson } from "@/lib/apiClient";
 import { readStoredAuth } from "@/lib/authSession";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 type TaskHubMode = "all" | "quiz" | "test";
 type CreateTaskType = "quiz" | "test" | "assignment" | null;

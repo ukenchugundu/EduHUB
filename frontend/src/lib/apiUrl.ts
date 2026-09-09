@@ -26,7 +26,27 @@ export const normalizeApiBase = (value: string | undefined | null): string => {
   return normalizedValue;
 };
 
-export const API_BASE = normalizeApiBase(import.meta.env.VITE_API_URL);
+export const DEFAULT_API_BASE = "https://eduhub-backend-pf6o.onrender.com";
+
+export const getApiBase = (): string => {
+  const envUrl = normalizeApiBase(import.meta.env.VITE_API_URL);
+  if (envUrl) {
+    return envUrl;
+  }
+
+  // If running in a deployed environment (e.g. Vercel), fall back to live Render backend
+  if (
+    typeof window !== "undefined" &&
+    window.location.hostname !== "localhost" &&
+    window.location.hostname !== "127.0.0.1"
+  ) {
+    return DEFAULT_API_BASE;
+  }
+
+  return "";
+};
+
+export const API_BASE = getApiBase();
 
 export const buildApiUrl = (path: string): string => {
   const trimmedPath = path.trim();

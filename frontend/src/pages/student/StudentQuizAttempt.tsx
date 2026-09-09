@@ -40,7 +40,7 @@ interface QuizAttempt {
   quiz: Quiz;
 }
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 const QUIZ_API_URL = `${API_BASE}/api/quizzes`;
 
 const getQuizRequestHeaders = (): HeadersInit => {

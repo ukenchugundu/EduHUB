@@ -40,7 +40,7 @@ import StudentLayout from "@/components/StudentLayout";
 import FacultyLayout from "@/components/FacultyLayout";
 import AdminLayout from "@/components/AdminLayout";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 interface LiveProfile {
   email?: string;

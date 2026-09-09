@@ -9,10 +9,14 @@ type SupabaseAuthSuccess = {
 };
 
 const fallbackSupabaseUrl = "https://ynfmqjmdibnnlcuospdo.supabase.co";
+const fallbackSupabaseAnonKey =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InluZm1xam1kaWJubmxjdW9zcGRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5NDI3MzcsImV4cCI6MjEwNDUxODczN30.tvsydEBYA8vZVxMKKC2ng1KonjU-AibdfgKiC9rGK6U";
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || fallbackSupabaseUrl)
   .trim()
   .replace(/\/+$/, "");
-const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || "").trim();
+const supabaseAnonKey = (
+  import.meta.env.VITE_SUPABASE_ANON_KEY || fallbackSupabaseAnonKey
+).trim();
 
 const getConfigError = (): string | null => {
   if (!supabaseUrl) {

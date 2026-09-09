@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import AdminLayout from "@/components/AdminLayout";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 interface Event {
   id: number;

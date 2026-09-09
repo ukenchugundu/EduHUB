@@ -2635,7 +2635,7 @@ export const loginUser = async (req: Request, res: Response) => {
     }
 
     // Direct token login - OTP disabled for simplicity
-    const JWT_SECRET = "fallback-secret";
+    const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
     const token = jwt.sign(
       {
         userId: publicUser.id,
@@ -2664,7 +2664,7 @@ export const loginUser = async (req: Request, res: Response) => {
       const publicUser = toPublicUser(user);
 
       // Direct token login - OTP disabled
-      const JWT_SECRET = "fallback-secret";
+      const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
       const token = jwt.sign(
         {
           userId: publicUser.id,

@@ -58,7 +58,7 @@ interface NoteUploadResponse {
   size: number;
 }
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const buildAuthHeaders = (includeJsonContentType = false): HeadersInit => {

@@ -34,7 +34,7 @@ interface NoteItem {
   updated_at: string;
 }
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 const officePreviewExtensions = new Set([
   "doc",
   "docx",

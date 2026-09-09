@@ -1,7 +1,7 @@
 import { getStudentIdentity, readStoredAuth } from "@/lib/authSession";
 import { requestJson as apiRequestJson } from "@/lib/apiClient";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 export interface StudentTestResult {
   testId: string;

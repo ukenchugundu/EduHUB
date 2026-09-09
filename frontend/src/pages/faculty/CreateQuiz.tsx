@@ -31,7 +31,7 @@ import { toast } from "sonner";
 import { readStoredAuth } from "@/lib/authSession";
 
 type QuestionType = "mcq" | "fill_blank" | "true_false";
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 interface Question {
   id: string;
