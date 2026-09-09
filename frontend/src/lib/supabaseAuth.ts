@@ -8,7 +8,7 @@ type SupabaseAuthSuccess = {
   };
 };
 
-const fallbackSupabaseUrl = "https://eqglaznzqftcgkshqcra.supabase.co";
+const fallbackSupabaseUrl = "https://ynfmqjmdibnnlcuospdo.supabase.co";
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || fallbackSupabaseUrl)
   .trim()
   .replace(/\/+$/, "");

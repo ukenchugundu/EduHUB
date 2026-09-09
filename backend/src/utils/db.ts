@@ -48,7 +48,10 @@ if (!connectionString) {
 }
 const forceSsl = process.env.DB_SSL?.toLowerCase() === "true";
 const disableSsl = process.env.DB_SSL?.toLowerCase() === "false";
-const isSupabaseConnection = connectionString.includes(".supabase.co");
+const isSupabaseConnection =
+  connectionString.includes(".supabase.") ||
+  connectionString.includes("supabase.co") ||
+  connectionString.includes("supabase.com");
 const sslConfig = disableSsl
   ? false
   : forceSsl || isSupabaseConnection

@@ -47,7 +47,12 @@ if (!connectionString) {
   throw new Error("DATABASE_URL is required.");
 }
 
-const sslConfig = connectionString.includes(".supabase.co")
+const isSupabase =
+  connectionString.includes(".supabase.") ||
+  connectionString.includes("supabase.co") ||
+  connectionString.includes("supabase.com");
+
+const sslConfig = isSupabase
   ? { rejectUnauthorized: false }
   : false;
 
