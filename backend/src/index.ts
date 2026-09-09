@@ -66,6 +66,29 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 app.use(express.json({ limit: "35mb" }));
 app.use("/uploads", express.static(path.resolve(__dirname, "..", "uploads")));
 
+app.get("/", (req: Request, res: Response) => {
+  res.json({
+    status: "healthy",
+    service: "EduHub Backend API Gateway",
+    timestamp: new Date().toISOString(),
+    version: "1.0.0",
+    frontendUrl:
+      process.env.FRONTEND_BASE_URL ||
+      "Configure FRONTEND_BASE_URL to link to your Vercel deployment",
+    endpoints: {
+      health: "/api",
+      auth: "/api/login",
+      aiChat: "/api/ai/chat",
+      aiQuiz: "/api/ai/generate-quiz",
+      tasks: "/api/tasks",
+      events: "/api/events",
+      attendance: "/api/attendance",
+      quizzes: "/api/quizzes",
+      timetable: "/api/timetable",
+    },
+  });
+});
+
 app.get("/api", (req: Request, res: Response) => {
   res.send("Welcome to EduHub Backend!");
 });
