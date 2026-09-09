@@ -531,7 +531,7 @@ export const markAttendance = async (req: Request, res: Response) => {
     }
 
     // Process attendance records
-    const results = [];
+    const results: any[] = [];
     for (const record of records) {
       const { studentId, status } = record;
 

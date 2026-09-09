@@ -202,7 +202,7 @@ const mapTaskRow = (row: any) => ({
 // GET /api/faculty/tasks - Get all tasks for faculty (Hybrid: DB with Memory Fallback)
 router.get("/tasks", async (req: Request, res: Response) => {
   try {
-    let tasksList = [];
+    let tasksList: any[] = [];
 
     try {
       await ensureTasksTable();
@@ -325,7 +325,7 @@ router.post("/tasks", async (req: Request, res: Response) => {
 router.get("/student/tasks/:studentId", async (req: Request, res: Response) => {
   try {
     const { studentId } = req.params;
-    let tasksList = [];
+    let tasksList: any[] = [];
 
     try {
       await ensureTasksTable();
@@ -466,7 +466,7 @@ router.post("/student/tasks/:taskId/start", async (req: Request, res: Response) 
 // GET /api/tasks/status - Get real-time status updates for all tasks
 router.get("/status", async (req: Request, res: Response) => {
   try {
-    let tasksList = [];
+    let tasksList: any[] = [];
     try {
       await ensureTasksTable();
       const result = await pool.query("SELECT * FROM tasks");

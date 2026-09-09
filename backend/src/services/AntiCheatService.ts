@@ -137,7 +137,7 @@ export class AntiCheatService {
           [current.question_id, current.student_id, submissionId],
         );
 
-    const similarSubmissions = [];
+    const similarSubmissions: any[] = [];
 
     for (const other of otherSubmissions.rows) {
       const similarity = this.calculateCodeSimilarity(current.code, other.code);
@@ -220,7 +220,7 @@ export class AntiCheatService {
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
 
-    const matchingLines = [];
+    const matchingLines: string[] = [];
 
     for (const line1 of lines1) {
       for (const line2 of lines2) {

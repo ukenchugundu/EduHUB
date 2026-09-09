@@ -35,7 +35,10 @@ const allowedOrigins = buildAllowedOrigins(
 
 // Configure CORS to allow requests from Vercel, ngrok, and local development
 const corsOptions: cors.CorsOptions = {
-  origin: function (origin, callback) {
+  origin: function (
+    origin: string | undefined,
+    callback: (err: Error | null, allow?: boolean) => void,
+  ) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) {
       return callback(null, true);
@@ -55,7 +58,7 @@ app.use(cors(corsOptions));
 console.log("[CORS] Configured with allowed origins:", allowedOrigins);
 
 // Log all requests
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   console.log(`[Request] ${req.method} ${req.url}`);
   next();
 });
