@@ -3,7 +3,10 @@ import { Pool } from "pg";
 import { AntiCheatService } from "../services/AntiCheatService";
 import { CodeExecutionService } from "../services/CodeExecutionService";
 import { ensureCodingTestsSchema } from "../utils/codingTestsSchema";
-import { ensureStudentPortalContext } from "../utils/studentPortalAccess";
+import {
+  ensureStudentPortalContext,
+  getAcademicTableNames,
+} from "../utils/studentPortalAccess";
 
 const router = express.Router();
 
@@ -17,7 +20,12 @@ export const createTestRoutes = (db: Pool) => {
     }
 
     const studentContext = await ensureStudentPortalContext(db, parsedAuthUserId);
-    return studentContext?.portalStudentId ?? null;
+    if (studentContext?.portalStudentId) {
+      return studentContext.portalStudentId;
+    }
+
+    const { studentTableName } = await getAcademicTableNames(db);
+    return studentTableName ? null : parsedAuthUserId;
   };
 
   router.use(async (_req, res, next) => {

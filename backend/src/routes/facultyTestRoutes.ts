@@ -4,6 +4,7 @@ import multer from "multer";
 import csv from "csv-parser";
 import fs from "fs";
 import { ensureCodingTestsSchema } from "../utils/codingTestsSchema";
+import { AntiCheatService } from "../services/AntiCheatService";
 import {
   getAcademicTableNames,
   resolvePortalStudentIdByIdentifier,
@@ -256,6 +257,42 @@ export const createFacultyTestRoutes = (db: Pool) => {
     } catch (error) {
       console.error("Error fetching tests with marks:", error);
       res.status(500).json({ error: "Failed to fetch tests with marks" });
+    }
+  });
+
+  // Live Proctoring Status for active exam
+  router.get("/tests/:testId/live-proctoring", async (req: any, res) => {
+    try {
+      const { testId } = req.params;
+      const antiCheat = new AntiCheatService(db);
+      const summary = await antiCheat.getCheatingReport(Number(testId));
+      res.json({
+        success: true,
+        testId: Number(testId),
+        candidates: summary,
+      });
+    } catch (error: any) {
+      console.error("Error fetching live proctoring status:", error);
+      res.status(500).json({ error: "Failed to fetch live proctoring status" });
+    }
+  });
+
+  // Remotely terminate candidate test attempt for cheating
+  router.post("/tests/:testId/terminate-attempt", async (req: any, res) => {
+    try {
+      const { attemptId, reason = "Disqualified for exam violations" } = req.body;
+      if (!attemptId) {
+        return res.status(400).json({ error: "attemptId is required" });
+      }
+      const antiCheat = new AntiCheatService(db);
+      await antiCheat.terminateTest(Number(attemptId), reason);
+      res.json({
+        success: true,
+        message: `Attempt ${attemptId} has been terminated.`,
+      });
+    } catch (error: any) {
+      console.error("Error terminating candidate attempt:", error);
+      res.status(500).json({ error: "Failed to terminate test attempt" });
     }
   });
 

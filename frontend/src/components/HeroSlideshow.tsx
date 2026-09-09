@@ -4,16 +4,16 @@ import { ChevronDown } from "lucide-react";
 import campus1 from "@/assets/campus-1.jpeg";
 import campus2 from "@/assets/campus-2.jpg";
 import campus3 from "@/assets/campus-3.jpg";
-import campus4 from "@/assets/campus-4.avif";
+import campus4 from "@/assets/campus-4.jpg";
 import campus5 from "@/assets/campus-5.jpeg";
 
 const images = [campus1, campus2, campus3, campus4, campus5];
 const captions = [
-  "SVCE Tirupati — Building Future Engineers",
-  "State-of-the-Art Library & Learning Resources",
-  "A Campus Built for Learning, Growth, and Excellence",
-  "Grand Auditorium & Events",
-  "World-Class Sports Facilities",
+  "EduHub Campus — Inspiring Future Engineers & Innovators",
+  "High-Tech Computing, Robotics & AI Innovation Laboratories",
+  "State-of-the-Art Digital Library & Collaborative Commons",
+  "Student Technology Incubation & Modern Innovation Center",
+  "World-Class University Campus Grounds & Aerial View",
 ];
 
 const HeroSlideshow = () => {

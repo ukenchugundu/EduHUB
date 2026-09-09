@@ -13,6 +13,7 @@ import timetableRoutes from "./routes/timetableRoutes";
 import { createTestRoutes } from "./routes/testRoutes";
 import { createFacultyTestRoutes } from "./routes/facultyTestRoutes";
 import studentTestRoutes from "./routes/studentTestRoutes";
+import aiRoutes from "./routes/aiRoutes";
 import { authenticateToken } from "./middlewares/auth";
 import { buildAllowedOrigins, isAllowedOrigin } from "./utils/corsOrigins";
 
@@ -72,6 +73,7 @@ app.use("/api/tasks", taskRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/timetable", timetableRoutes);
+app.use("/api/ai", aiRoutes);
 
 import { createMockRoutes } from "./routes/mockRoutes";
 

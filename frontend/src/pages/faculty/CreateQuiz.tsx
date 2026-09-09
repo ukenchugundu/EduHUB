@@ -12,6 +12,8 @@ import {
   Radio,
   Type,
   FileText,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
 import FacultyLayout from "@/components/FacultyLayout";
 import { Button } from "@/components/ui/button";
@@ -77,6 +79,65 @@ const CreateQuiz = () => {
       points: 1,
     },
   ]);
+
+  const [showAiModal, setShowAiModal] = useState(false);
+  const [aiTopic, setAiTopic] = useState("");
+  const [aiCount, setAiCount] = useState(5);
+  const [aiDifficulty, setAiDifficulty] = useState<"Easy" | "Medium" | "Hard">("Medium");
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const handleAiGenerate = async () => {
+    const topicToUse = aiTopic.trim() || taskData?.subject || taskData?.title;
+    if (!topicToUse) {
+      toast.error("Please enter a topic to generate questions.");
+      return;
+    }
+    setIsGenerating(true);
+    try {
+      const authSession = readStoredAuth();
+      const res = await fetch(`${API_BASE}/api/ai/generate-quiz`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}),
+        },
+        body: JSON.stringify({
+          topic: topicToUse,
+          questionCount: aiCount,
+          difficulty: aiDifficulty,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to generate questions");
+      }
+
+      const data = await res.json();
+      if (data.questions && data.questions.length > 0) {
+        const generatedList: Question[] = data.questions.map((q: any, idx: number) => {
+          const correctOpt = q.options.find((o: any) => o.is_correct);
+          return {
+            id: (questions.length + idx + 1).toString(),
+            question: q.question_text,
+            type: "mcq" as QuestionType,
+            options: q.options.map((o: any) => o.option_text),
+            correctAnswer: correctOpt ? correctOpt.option_text : q.options[0]?.option_text || "",
+            points: 1,
+          };
+        });
+
+        setQuestions((prev) =>
+          prev.length === 1 && !prev[0].question.trim() ? generatedList : [...prev, ...generatedList],
+        );
+        toast.success(`Generated ${generatedList.length} questions using Gemini AI!`);
+        setShowAiModal(false);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "AI generation failed");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   const handleAddQuestion = () => {
     const newQuestion: Question = {
@@ -258,6 +319,17 @@ const CreateQuiz = () => {
               Cancel
             </Button>
             <Button
+              variant="outline"
+              className="border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 gap-2 shadow-sm"
+              onClick={() => {
+                setAiTopic(taskData.subject || taskData.title || "");
+                setShowAiModal(true);
+              }}
+            >
+              <Sparkles className="w-4 h-4 text-purple-400 animate-pulse" />
+              Generate with AI
+            </Button>
+            <Button
               className="gradient-accent text-white"
               onClick={handleSaveQuiz}
             >
@@ -433,6 +505,105 @@ const CreateQuiz = () => {
             <span className="font-semibold">Add Another Question</span>
           </Button>
         </div>
+
+        {/* AI Quiz Generation Modal */}
+        <AnimatePresence>
+          {showAiModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl relative"
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-500/40 flex items-center justify-center">
+                    <Sparkles className="w-5 h-5 text-purple-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-white">Generate Questions with AI</h3>
+                    <p className="text-xs text-muted-foreground">Powered by Google Gemini 2.5 Flash</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <Label className="text-xs text-slate-300">Topic or Subject</Label>
+                    <Input
+                      placeholder="e.g. Binary Search Trees, SQL Joins, Cloud Computing"
+                      value={aiTopic}
+                      onChange={(e) => setAiTopic(e.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs text-slate-300">Question Count</Label>
+                      <Select
+                        value={aiCount.toString()}
+                        onValueChange={(val) => setAiCount(parseInt(val) || 5)}
+                      >
+                        <SelectTrigger className="mt-1">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="3">3 Questions</SelectItem>
+                          <SelectItem value="5">5 Questions</SelectItem>
+                          <SelectItem value="10">10 Questions</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label className="text-xs text-slate-300">Difficulty</Label>
+                      <Select
+                        value={aiDifficulty}
+                        onValueChange={(val: any) => setAiDifficulty(val)}
+                      >
+                        <SelectTrigger className="mt-1">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Easy">Easy</SelectItem>
+                          <SelectItem value="Medium">Medium</SelectItem>
+                          <SelectItem value="Hard">Hard</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
+                    <Button
+                      variant="ghost"
+                      onClick={() => setShowAiModal(false)}
+                      disabled={isGenerating}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleAiGenerate}
+                      disabled={isGenerating}
+                      className="gradient-primary text-white gap-2"
+                    >
+                      {isGenerating ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" />
+                          Generate MCQs
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     </FacultyLayout>
   );

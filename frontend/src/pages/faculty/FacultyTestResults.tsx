@@ -6,7 +6,9 @@ import {
   CheckCircle2,
   Flag,
   Loader2,
+  Radio,
   Shield,
+  ShieldAlert,
   Users,
 } from "lucide-react";
 import FacultyLayout from "@/components/FacultyLayout";
@@ -14,6 +16,7 @@ import { requestJson as apiRequestJson } from "@/lib/apiClient";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { readStoredAuth } from "@/lib/authSession";
+import { toast } from "sonner";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
@@ -76,17 +79,21 @@ const FacultyTestResults = () => {
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [liveMonitoring, setLiveMonitoring] = useState(false);
+  const [isTerminating, setIsTerminating] = useState(false);
 
   const parsedTestId = Number(testId);
 
-  const loadResults = async () => {
+  const loadResults = async (silent: boolean = false) => {
     if (!Number.isInteger(parsedTestId) || parsedTestId <= 0) {
       setError("Invalid test id.");
       setLoading(false);
       return;
     }
 
-    setLoading(true);
+    if (!silent) {
+      setLoading(true);
+    }
     setError("");
 
     try {
@@ -105,21 +112,66 @@ const FacultyTestResults = () => {
         setSelectedAttempt(null);
       }
     } catch (loadError) {
-      setResults([]);
-      setSelectedAttempt(null);
-      setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Failed to load coding test results.",
-      );
+      if (!silent) {
+        setResults([]);
+        setSelectedAttempt(null);
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Failed to load coding test results.",
+        );
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     void loadResults();
   }, [parsedTestId]);
+
+  // Live auto-polling every 5 seconds when live monitoring is enabled
+  useEffect(() => {
+    if (!liveMonitoring) return;
+    const interval = setInterval(() => {
+      void loadResults(true);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [liveMonitoring, parsedTestId]);
+
+  const handleTerminateAttempt = async (attemptId: number) => {
+    if (!confirm(`Are you sure you want to terminate Attempt #${attemptId} immediately for exam violations?`)) {
+      return;
+    }
+    setIsTerminating(true);
+    try {
+      const token = readStoredAuth()?.token?.trim();
+      const res = await fetch(`${API_BASE}/api/faculty/tests/${parsedTestId}/terminate-attempt`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          attemptId,
+          reason: "Terminated remotely by faculty proctor for excessive violations",
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to terminate attempt");
+      }
+
+      toast.success(`Candidate attempt #${attemptId} has been terminated.`);
+      void loadResults(true);
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to terminate candidate attempt.");
+    } finally {
+      setIsTerminating(false);
+    }
+  };
 
   const counts = useMemo(
     () => ({
@@ -151,9 +203,32 @@ const FacultyTestResults = () => {
               </p>
             </div>
           </div>
-          <Button variant="outline" onClick={() => void loadResults()}>
-            Refresh
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button
+              variant={liveMonitoring ? "default" : "outline"}
+              className={
+                liveMonitoring
+                  ? "bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-sm"
+                  : "gap-2"
+              }
+              onClick={() => {
+                const next = !liveMonitoring;
+                setLiveMonitoring(next);
+                if (next) {
+                  toast.success("Live proctoring active — auto-refreshing candidate telemetry every 5s.");
+                  void loadResults(true);
+                } else {
+                  toast.info("Live proctoring paused.");
+                }
+              }}
+            >
+              <Radio className={`h-4 w-4 ${liveMonitoring ? "animate-pulse" : ""}`} />
+              {liveMonitoring ? "Live Monitoring (Active)" : "Enable Live Proctoring"}
+            </Button>
+            <Button variant="outline" onClick={() => void loadResults()}>
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {error ? (
@@ -325,6 +400,29 @@ const FacultyTestResults = () => {
                         </div>
                       )}
                     </div>
+
+                    {selectedAttempt.status !== "Terminated" ? (
+                      <div className="pt-4 border-t border-border/50 flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">
+                          Proctor Disqualification Action
+                        </span>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          disabled={isTerminating}
+                          className="gap-2"
+                          onClick={() => handleTerminateAttempt(selectedAttempt.attempt_id)}
+                        >
+                          <ShieldAlert className="h-4 w-4" />
+                          Terminate Attempt
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="pt-4 border-t border-destructive/30 text-xs font-semibold text-destructive flex items-center gap-2">
+                        <ShieldAlert className="h-4 w-4" />
+                        This candidate attempt was terminated for exam violations.
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

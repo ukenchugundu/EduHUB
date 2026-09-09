@@ -6,6 +6,7 @@ interface FacultyCardProps {
   designation: string;
   qualification?: string;
   isLarge?: boolean;
+  image?: string;
 }
 
 const FacultyCard = ({
@@ -13,6 +14,7 @@ const FacultyCard = ({
   designation,
   qualification,
   isLarge = false,
+  image,
 }: FacultyCardProps) => (
   <motion.div
     whileHover={{ y: -6, scale: 1.02 }}
@@ -20,11 +22,19 @@ const FacultyCard = ({
     className={`glass-card rounded-2xl overflow-hidden cursor-pointer ${isLarge ? "p-8" : "p-5"}`}
   >
     <div
-      className={`rounded-2xl gradient-primary flex items-center justify-center mx-auto mb-4 ${
-        isLarge ? "w-24 h-24" : "w-16 h-16"
+      className={`rounded-2xl gradient-primary flex items-center justify-center mx-auto mb-4 overflow-hidden border border-white/20 shadow-md ${
+        isLarge ? "w-28 h-28" : "w-16 h-16"
       }`}
     >
-      <User className={`text-white ${isLarge ? "w-12 h-12" : "w-8 h-8"}`} />
+      {image ? (
+        <img
+          src={image}
+          alt={name}
+          className="w-full h-full object-cover object-top"
+        />
+      ) : (
+        <User className={`text-white ${isLarge ? "w-12 h-12" : "w-8 h-8"}`} />
+      )}
     </div>
     <h3
       className={`font-heading font-bold text-foreground text-center ${isLarge ? "text-lg" : "text-sm"}`}

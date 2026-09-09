@@ -699,7 +699,14 @@ export const getFacultyNextTimetableClass = async (req: Request, res: Response) 
 
 export const getStudentTimetableSchedule = async (req: Request, res: Response) => {
   try {
-    await ensureTimetableTables();
+    try {
+      await ensureTimetableTables();
+    } catch (error) {
+      if (isUndefinedTableError(error)) {
+        return res.json({ today: [], upcoming: [] });
+      }
+      throw error;
+    }
     const { userId } = (req as any).user ?? {};
     const now = new Date();
     const todayWeekday = getIsoWeekday(now);

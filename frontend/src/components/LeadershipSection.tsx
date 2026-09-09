@@ -2,6 +2,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect } from "react";
 import { User } from "lucide-react";
 import FacultyCard from "./FacultyCard";
+import leaderPrincipal from "@/assets/leader-principal.jpg";
+import leaderVicePrincipal from "@/assets/leader-vice-principal.jpg";
 
 interface Leader {
   name: string;
@@ -9,13 +11,15 @@ interface Leader {
   qualification: string;
   bio: string;
   achievements: string[];
+  image: string;
 }
 
 const leaders: Leader[] = [
   {
     name: "Dr. Vijaya Gunturu",
     designation: "Principal",
-    qualification: "Ph.D.(IIT Roorke), Mtech.",
+    qualification: "Ph.D.(IIT Roorkee), M.Tech.",
+    image: leaderPrincipal,
     bio: "Dr. Vijaya Gunturu serves as the Principal of Sri Venkateswara College of Engineering, Tirupati. With a Ph.D. from IIT Roorkee and over two decades of experience in engineering education, she has been instrumental in establishing SVCE as a leading technical institution in Andhra Pradesh. Her vision focuses on holistic student development, industry-academia collaboration, and fostering innovation through research.",
     achievements: [
       "Established industry partnerships with leading tech companies",
@@ -26,9 +30,10 @@ const leaders: Leader[] = [
     ],
   },
   {
-    name: "Dr.Tharakeshwar A",
+    name: "Dr. Tharakeshwar A",
     designation: "Vice Principal",
     qualification: "Ph.D.",
+    image: leaderVicePrincipal,
     bio: "Dr. Tharakeshwar A is the Vice Principal at SVCE, bringing extensive expertise in academic administration and curriculum development. He oversees the day-to-day academic operations, faculty development programs, and student welfare activities. His leadership has been pivotal in implementing outcome-based education and enhancing the quality of teaching-learning processes across all departments.",
     achievements: [
       "Coordinated NBA accreditation for 6 engineering programs",
@@ -108,6 +113,7 @@ const LeadershipSection = () => {
                 name={leader.name}
                 designation={leader.designation}
                 qualification={leader.qualification}
+                image={leader.image}
                 isLarge
               />
             </motion.div>
@@ -159,10 +165,20 @@ const LeadershipSection = () => {
                     className="mb-8"
                   >
                     <motion.div
-                      className="w-48 h-48 mx-auto rounded-2xl gradient-primary flex items-center justify-center mb-6"
-                      whileHover={{ scale: 1.05, rotate: 5 }}
+                      className="w-48 h-48 mx-auto rounded-2xl overflow-hidden shadow-2xl border-2 border-purple-500/40 mb-6"
+                      whileHover={{ scale: 1.05 }}
                     >
-                      <User className="text-white w-24 h-24" />
+                      {selectedLeader.image ? (
+                        <img
+                          src={selectedLeader.image}
+                          alt={selectedLeader.name}
+                          className="w-full h-full object-cover object-top"
+                        />
+                      ) : (
+                        <div className="w-full h-full gradient-primary flex items-center justify-center">
+                          <User className="text-white w-24 h-24" />
+                        </div>
+                      )}
                     </motion.div>
                     <h3 className="text-3xl font-bold text-white text-center mb-2">
                       {selectedLeader.name}

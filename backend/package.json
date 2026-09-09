@@ -10,6 +10,8 @@
     "test": "jest"
   },
   "dependencies": {
+    "@google/genai": "^2.21.0",
+    "@supabase/supabase-js": "^2.116.0",
     "@types/jsonwebtoken": "^9.0.10",
     "cors": "^2.8.6",
     "csv-parser": "^3.2.0",

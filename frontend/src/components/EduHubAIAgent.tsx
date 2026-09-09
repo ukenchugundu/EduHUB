@@ -1,10 +1,11 @@
-import { useState } from "react";
-import { Send, Sparkles, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Bot, Send, Sparkles, Trash2, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { PortalRole } from "@/lib/authSession";
+import { PortalRole, readStoredAuth } from "@/lib/authSession";
 
 type AgentMessage = {
+  id: number;
   sender: "assistant" | "user";
   text: string;
 };
@@ -163,8 +164,20 @@ const AGENT_CONFIG: Record<PortalRole, AgentConfig> = {
 };
 
 const getResponse = (role: PortalRole, prompt: string): string => {
-  const normalizedPrompt = prompt.toLowerCase();
+  const normalizedPrompt = prompt.trim().toLowerCase();
   const config = AGENT_CONFIG[role];
+
+  if (/^(hi|hello|hey|good morning|good afternoon|good evening)\b/.test(normalizedPrompt)) {
+    return `${config.welcome}\n\nTry one of the quick actions below, or ask me about ${config.placeholder
+      .replace(/^Ask about |\.\.\.$/g, "")
+      .toLowerCase()}.`;
+  }
+
+  if (normalizedPrompt.includes("help") || normalizedPrompt.includes("what can you do")) {
+    return `I can help with ${config.placeholder
+      .replace(/^Ask about |\.\.\.$/g, "")
+      .toLowerCase()}. Ask one focused question and I will return clear EduHub steps.`;
+  }
 
   const matchedIntent = config.intents.find((intent) =>
     intent.keywords.some((keyword) => normalizedPrompt.includes(keyword)),
@@ -229,19 +242,93 @@ const EduHubAIAgent = ({
   const [open, setOpen] = useState(defaultOpen);
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [isResponding, setIsResponding] = useState(false);
+  const responseTimer = useRef<number | null>(null);
+  const messageId = useRef(0);
 
-  const submitPrompt = (nextPrompt: string) => {
+  useEffect(() => {
+    return () => {
+      if (responseTimer.current !== null) {
+        window.clearInterval(responseTimer.current);
+      }
+    };
+  }, []);
+
+  const submitPrompt = async (nextPrompt: string) => {
     const trimmedPrompt = nextPrompt.trim();
-    if (!trimmedPrompt || disabled) {
+    if (!trimmedPrompt || disabled || isResponding) {
       return;
     }
 
+    const userMessageId = messageId.current + 1;
+    const assistantMessageId = userMessageId + 1;
+    messageId.current = assistantMessageId;
     setMessages((previous) => [
       ...previous,
-      { sender: "user", text: trimmedPrompt },
-      { sender: "assistant", text: getResponse(role, trimmedPrompt) },
+      { id: userMessageId, sender: "user", text: trimmedPrompt },
+      { id: assistantMessageId, sender: "assistant", text: "..." },
     ]);
     setPrompt("");
+    setIsResponding(true);
+
+    let finalResponse = "";
+    try {
+      const auth = readStoredAuth();
+      const token = auth?.token;
+      const apiBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+      const res = await fetch(`${apiBase}/api/ai/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          prompt: trimmedPrompt,
+          history: messages.slice(-6).map((m) => ({ sender: m.sender, text: m.text })),
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        finalResponse = data.response || getResponse(role, trimmedPrompt);
+      } else {
+        finalResponse = getResponse(role, trimmedPrompt);
+      }
+    } catch {
+      finalResponse = getResponse(role, trimmedPrompt);
+    }
+
+    let visibleCharacters = 0;
+    responseTimer.current = window.setInterval(() => {
+      visibleCharacters = Math.min(visibleCharacters + 4, finalResponse.length);
+      const visibleText = finalResponse.slice(0, visibleCharacters);
+
+      setMessages((previous) => {
+        return previous.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, text: visibleText }
+            : message,
+        );
+      });
+
+      if (visibleCharacters >= finalResponse.length) {
+        if (responseTimer.current !== null) {
+          window.clearInterval(responseTimer.current);
+          responseTimer.current = null;
+        }
+        setIsResponding(false);
+      }
+    }, 15);
+  };
+
+  const clearConversation = () => {
+    if (responseTimer.current !== null) {
+      window.clearInterval(responseTimer.current);
+      responseTimer.current = null;
+    }
+    setIsResponding(false);
+    setMessages([]);
   };
 
   return (
@@ -294,7 +381,7 @@ const EduHubAIAgent = ({
             </Button>
           </div>
 
-          <div className="relative space-y-4 px-5 py-5">
+          <div className="relative space-y-4 px-4 py-4 sm:px-5 sm:py-5">
             {disabled ? (
               <div className="rounded-[1.6rem] border border-destructive/25 bg-destructive/10 p-4 text-sm text-foreground shadow-inner shadow-destructive/5">
                 <div className="mb-2 flex items-center gap-2 font-semibold text-destructive">
@@ -305,7 +392,7 @@ const EduHubAIAgent = ({
               </div>
             ) : (
               <>
-                <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-4 text-sm text-foreground shadow-inner shadow-slate-950/5 backdrop-blur-sm">
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-foreground shadow-inner shadow-slate-950/5 backdrop-blur-sm">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2 font-semibold">
                       <EduHubAgentAvatar className="h-7 w-7" />
@@ -335,40 +422,74 @@ const EduHubAIAgent = ({
                   ))}
                 </div>
 
-                <div className="rounded-[1.75rem] border border-white/10 bg-slate-950/5 p-3 shadow-inner shadow-slate-950/5 dark:bg-slate-950/35">
-                  <div className="mb-3 flex items-center justify-between px-1">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                      Conversation
-                    </span>
-                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
-                      <span className="h-2 w-2 rounded-full animate-pulse bg-emerald-400" />
-                      Active chat
-                    </span>
+                <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/70 shadow-sm">
+                  <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <Bot className="h-4 w-4" />
+                      </span>
+                      <div>
+                        <p className="text-xs font-semibold text-foreground">Current session</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {messages.length ? `${messages.length} messages` : "Ready for your question"}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={clearConversation}
+                      disabled={!messages.length || isResponding}
+                      className="h-8 gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:text-foreground"
+                      aria-label="Clear chat session"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Clear
+                    </Button>
                   </div>
 
-                  <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
+                  <div className="max-h-80 min-h-32 space-y-3 overflow-y-auto p-3">
                     {messages.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-white/10 bg-background/70 p-4 text-sm text-muted-foreground">
-                        <p className="font-medium text-foreground">Ask a question to start chatting.</p>
-                        <p className="mt-1">I will answer with simple EduHub steps in a chat-style format.</p>
+                      <div className="flex min-h-28 flex-col items-center justify-center rounded-xl border border-dashed border-border/70 bg-muted/20 px-4 py-5 text-center text-sm text-muted-foreground">
+                        <Sparkles className="mb-2 h-5 w-5 text-primary" />
+                        <p className="font-medium text-foreground">Start a new conversation</p>
+                        <p className="mt-1 text-xs">Ask a question or choose a suggested action above.</p>
                       </div>
                     ) : (
                       messages.map((message, index) => (
                         <div
-                          key={`${message.sender}-${index}`}
+                          key={message.id}
                           className={`flex ${message.sender === "assistant" ? "justify-start" : "justify-end"}`}
                         >
                           <div
-                            className={`max-w-[85%] rounded-[1.35rem] px-4 py-3 text-sm shadow-sm ${
+                            className={`flex max-w-[88%] gap-2 rounded-2xl px-3 py-2.5 text-sm shadow-sm ${
                               message.sender === "assistant"
-                                ? "rounded-bl-md border border-white/10 bg-background/85 text-foreground"
+                                ? "rounded-bl-md border border-border/70 bg-muted/40 text-foreground"
                                 : `rounded-br-md bg-gradient-to-r ${config.accentClassName} text-white`
                             }`}
                           >
-                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] opacity-80">
-                              {message.sender === "assistant" ? "EduHub AI" : "You"}
+                            <span className="mt-0.5 shrink-0 opacity-80" aria-hidden="true">
+                              {message.sender === "assistant" ? (
+                                <Bot className="h-3.5 w-3.5" />
+                              ) : (
+                                <UserRound className="h-3.5 w-3.5" />
+                              )}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] opacity-70">
+                                {message.sender === "assistant" ? "EduHub AI" : "You"}
+                              </div>
+                              {message.text ? (
+                                renderMessageLines(message.text)
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-muted-foreground" aria-label="Assistant is typing">
+                                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.2s]" />
+                                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.1s]" />
+                                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current" />
+                                </span>
+                              )}
                             </div>
-                            {renderMessageLines(message.text)}
                           </div>
                         </div>
                       ))
@@ -376,16 +497,20 @@ const EduHubAIAgent = ({
                   </div>
                 </div>
 
-                <div className="rounded-[1.6rem] border border-white/10 bg-background/80 p-3 shadow-inner shadow-slate-950/5 backdrop-blur-sm">
+                <div className="rounded-2xl border border-border/70 bg-background/90 p-3 shadow-sm backdrop-blur-sm">
                   <div className="mb-2 flex items-center justify-between px-1">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                      Message EduHub AI
-                    </span>
-                    <span className="text-[11px] text-muted-foreground">Step-by-step replies</span>
+                    <span className="text-xs font-semibold text-foreground">Write a message</span>
+                    <span className="text-[11px] text-muted-foreground">Enter to send</span>
                   </div>
                   <Textarea
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        submitPrompt(prompt);
+                      }
+                    }}
                     placeholder={config.placeholder}
                     rows={3}
                     className="min-h-[88px] resize-none border-0 bg-transparent px-1 shadow-none focus-visible:ring-0"
@@ -397,9 +522,15 @@ const EduHubAIAgent = ({
                         disabled ? "bg-destructive hover:bg-destructive/90" : `bg-gradient-to-r ${config.accentClassName}`
                       }`}
                       onClick={() => submitPrompt(prompt)}
+                      disabled={isResponding || !prompt.trim()}
+                      aria-label={isResponding ? "Assistant is responding" : "Ask assistant"}
                     >
-                      <Send className="h-4 w-4" />
-                      Ask assistant
+                      {isResponding ? (
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                      {isResponding ? "Responding" : "Ask assistant"}
                     </Button>
                   </div>
                 </div>
