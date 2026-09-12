@@ -1,5 +1,6 @@
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -125,9 +126,39 @@ const runNpmScript = (args, options = {}) =>
     });
   });
 
+const isPortInUse = (port) =>
+  new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+    server.once("listening", () => {
+      server.close(() => resolve(false));
+    });
+    server.listen(port);
+  });
+
 (async () => {
   const backendPort =
     Number(process.env.BACKEND_PORT || process.env.PORT) || 3000;
+
+  if (await isPortInUse(backendPort)) {
+    console.warn(`[dev] Warning: Port ${backendPort} is already in use.`);
+    if (process.platform === "win32") {
+      try {
+        const netstatOutput = execSync(`netstat -ano | findstr :${backendPort}`, { encoding: "utf8" });
+        const lines = netstatOutput.trim().split("\n");
+        console.warn(`[dev] Active connection(s) on port ${backendPort}:`);
+        for (const line of lines.slice(0, 3)) {
+          console.warn(`[dev]   ${line.trim()}`);
+        }
+      } catch {}
+    }
+  }
 
   if (shouldBuildFrontend()) {
     console.log("[dev] Frontend build is missing or outdated. Building frontend...");
@@ -156,10 +187,19 @@ const runNpmScript = (args, options = {}) =>
   });
 
   const shutdown = () => {
-    backend.kill();
+    if (backend && backend.pid) {
+      if (process.platform === "win32") {
+        try {
+          execSync(`taskkill /pid ${backend.pid} /T /F`, { stdio: "ignore" });
+        } catch {}
+      } else {
+        backend.kill("SIGTERM");
+      }
+    }
     process.exit(0);
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 })();
+

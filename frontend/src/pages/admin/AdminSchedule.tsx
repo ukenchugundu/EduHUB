@@ -19,7 +19,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-const API_BASE = (import.meta.env.VITE_API_URL || "https://eduhub-backend-pf6o.onrender.com").replace(/\/$/, "");
 
 interface Department {
   id: number;
@@ -265,22 +264,22 @@ const AdminSchedule = () => {
         const [departmentData, academicYearData, subjectData, facultyData] =
           await Promise.all([
             requestJson<Department[]>(
-              `${API_BASE}/api/attendance/departments`,
+              "/api/attendance/departments",
               undefined,
               "Failed to load departments.",
             ),
             requestJson<string[]>(
-              `${API_BASE}/api/attendance/academic-years`,
+              "/api/attendance/academic-years",
               undefined,
               "Failed to load academic years.",
             ),
             requestJson<SubjectOption[]>(
-              `${API_BASE}/api/attendance/subjects`,
+              "/api/attendance/subjects",
               undefined,
               "Failed to load subjects.",
             ),
             requestJson<FacultyMembersResponse>(
-              `${API_BASE}/api/admin/members?role=faculty`,
+              "/api/admin/members?role=faculty",
               undefined,
               "Failed to load faculty list.",
             ),
@@ -321,7 +320,7 @@ const AdminSchedule = () => {
 
         const queryString = params.toString();
         const data = await requestJson<Batch[]>(
-          `${API_BASE}/api/attendance/batches${queryString ? `?${queryString}` : ""}`,
+          `/api/attendance/batches${queryString ? `?${queryString}` : ""}`,
           undefined,
           "Failed to load batches.",
         );
@@ -356,7 +355,7 @@ const AdminSchedule = () => {
     try {
       setLoadingSessions(true);
       const data = await requestJson<TimetableEntry[]>(
-        `${API_BASE}/api/timetable/batches/${batchId}/entries`,
+        `/api/timetable/batches/${batchId}/entries`,
         undefined,
         "Failed to load batch timetable.",
       );
@@ -426,7 +425,7 @@ const AdminSchedule = () => {
     try {
       setSubmitting(true);
       await requestJson<TimetableEntry>(
-        `${API_BASE}/api/timetable/entries`,
+        "/api/timetable/entries",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -449,7 +448,7 @@ const AdminSchedule = () => {
       );
 
       const refreshedSessions = await requestJson<TimetableEntry[]>(
-        `${API_BASE}/api/timetable/batches/${form.batchId}/entries`,
+        `/api/timetable/batches/${form.batchId}/entries`,
         undefined,
         "Failed to refresh batch timetable.",
       );
@@ -482,7 +481,7 @@ const AdminSchedule = () => {
     try {
       setClearingTimetable(true);
       await requestJson<void>(
-        `${API_BASE}/api/timetable/batches/${form.batchId}/entries`,
+        `/api/timetable/batches/${form.batchId}/entries`,
         {
           method: "DELETE",
         },
@@ -512,7 +511,7 @@ const AdminSchedule = () => {
     try {
       setAutoGenerating(true);
       const generatedSessions = await requestJson<TimetableEntry[]>(
-        `${API_BASE}/api/timetable/batches/${form.batchId}/auto-generate`,
+        `/api/timetable/batches/${form.batchId}/auto-generate`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

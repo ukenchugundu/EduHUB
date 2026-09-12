@@ -73,16 +73,29 @@ const buildHeaders = (
 };
 
 const parseResponseBody = async (response: Response): Promise<unknown> => {
-  const rawText = await response.text();
-  if (!rawText.trim()) {
-    return null;
+  if (typeof response.text === "function") {
+    const rawText = await response.text();
+    if (!rawText.trim()) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(rawText);
+    } catch {
+      return rawText;
+    }
   }
 
-  try {
-    return JSON.parse(rawText);
-  } catch {
-    return rawText;
+  if (
+    typeof (response as unknown as { json?: () => Promise<unknown> }).json ===
+    "function"
+  ) {
+    return await (
+      response as unknown as { json: () => Promise<unknown> }
+    ).json();
   }
+
+  return null;
 };
 
 const extractErrorMessage = (

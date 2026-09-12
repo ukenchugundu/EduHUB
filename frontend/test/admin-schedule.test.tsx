@@ -27,53 +27,55 @@ describe("AdminSchedule", () => {
       }),
     );
 
+    const mockResponse = (data: unknown) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => data,
+        text: async () => JSON.stringify(data),
+      });
+
     global.fetch = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/api/attendance/departments")) {
-        return Promise.resolve({ ok: true, json: async () => [{ id: 1, name: "Computer Science", code: "CSE" }] });
+        return mockResponse([{ id: 1, name: "Computer Science", code: "CSE" }]);
       }
       if (url.includes("/api/attendance/academic-years")) {
-        return Promise.resolve({ ok: true, json: async () => ["2024-2025"] });
+        return mockResponse(["2024-2025"]);
       }
       if (url.includes("/api/attendance/subjects")) {
-        return Promise.resolve({ ok: true, json: async () => [{ id: 1, name: "Database Systems", code: "DBMS" }] });
+        return mockResponse([{ id: 1, name: "Database Systems", code: "DBMS" }]);
       }
       if (url.includes("/api/admin/members?role=faculty")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            members: [
-              {
-                id: 7,
-                fullName: "Dr. Ada Lovelace",
-                rollNumber: "FAC-0007",
-                department: "Computer Science",
-                designation: "Professor",
-                email: "ada@eduhub.test",
-              },
-            ],
-          }),
-        });
-      }
-      if (url.includes("/api/attendance/batches")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [
+        return mockResponse({
+          members: [
             {
-              id: 11,
-              name: "III CSE-A",
-              semester: 5,
-              academic_year: "2024-2025",
-              department_name: "Computer Science",
-              department_code: "CSE",
+              id: 7,
+              fullName: "Dr. Ada Lovelace",
+              rollNumber: "FAC-0007",
+              department: "Computer Science",
+              designation: "Professor",
+              email: "ada@eduhub.test",
             },
           ],
         });
       }
-      if (url.includes("/api/timetable/batches/11/entries")) {
-        return Promise.resolve({ ok: true, json: async () => [] });
+      if (url.includes("/api/attendance/batches")) {
+        return mockResponse([
+          {
+            id: 11,
+            name: "III CSE-A",
+            semester: 5,
+            academic_year: "2024-2025",
+            department_name: "Computer Science",
+            department_code: "CSE",
+          },
+        ]);
       }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
+      if (url.includes("/api/timetable/batches/11/entries")) {
+        return mockResponse([]);
+      }
+      return mockResponse({});
     }) as typeof fetch;
   });
 
